@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<title>pi-fusion dashboard</title>
+		<link rel="stylesheet" href="app.css">
+		<script src="app.js" defer></script>
+	</head>
+	<body>
+		<header class="header">
+			<h1 class="title">pi-fusion dashboard</h1>
+			<p class="cwd" id="cwd"></p>
+			<p class="usage" id="usage"></p>
+			<button class="runs-toggle" id="runs-toggle" type="button" aria-controls="runs" aria-expanded="false">Runs</button>
+		</header>
+		<p class="banner hidden" id="banner" role="status">Dashboard disconnected. Run /fusion dashboard again.</p>
+		<div class="attention hidden" id="attention" role="status"></div>
+		<main class="layout" id="layout">
+			<nav class="sidebar" id="runs" aria-label="Runs"></nav>
+			<section class="detail" id="detail" aria-label="Run detail"></section>
+		</main>
+	</body>
+</html>
