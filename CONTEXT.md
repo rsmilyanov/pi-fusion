@@ -13,7 +13,7 @@ A headless coding session doing work the host handed off: Claude Code, Pi, or Co
 _Avoid_: subagent, worker, delegate
 
 **Backend**:
-The implementation that runs a child: `claude`, `pi`, or `codex`. A backend owns its session shape, binding, and protocol; the host owns handles, records, and scheduling. See [Profiles](docs/profiles.md#what-a-call-runs-on) for selection and [Codex evidence](docs/codex-backend.md#evidence) for its experimental scope.
+The implementation that runs a child: `claude`, `pi`, or `codex`. A backend owns its session shape, binding, and protocol; the host owns handles, records, and scheduling. See [Profiles](docs/profiles.md#what-a-call-runs-on) for selection and [Codex evidence](docs/codex-backend.md#evidence) for its qualification limits.
 _Avoid_: adapter, provider, harness, runtime (as synonyms for backend)
 
 **Role**:
@@ -61,5 +61,5 @@ A fresh background `ask` run in review mode, linked to the ended `implement`, `u
 _Avoid_: self-review, verification, QA run
 
 **History**:
-The opt-in disk record of a durable host Pi session's runs, used by later processes for reports, usage, and dashboard restoration. Continuation authority remains the custom entries on the host's current branch.
+The opt-in disk record of a durable host Pi session's runs, used by later processes for reports, usage, and dashboard restoration. Each Fusion instance decides once at startup whether to keep it: a saved preference (`/fusion history on|off`), else `PI_FUSION_HISTORY`. Continuation authority remains the custom entries on the host's current branch.
 _Avoid_: log, cache, transcript

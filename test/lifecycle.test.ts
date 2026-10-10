@@ -14,6 +14,7 @@ import { CODEX_QUESTION_UNANSWERED } from "../extensions/backends/codex-transpor
 import { type BackendName, type HostBackend, hostBackend, type SessionIntent } from "../extensions/backends/types.ts";
 import fusion from "../extensions/fusion.ts";
 import { memoryProfileStore, type ProfileStore } from "../extensions/profile-store.ts";
+import { memorySettingsStore } from "../extensions/settings-store.ts";
 import { History, type HistoryRecord } from "../extensions/history.ts";
 import { type FakeBackend, fakeBackend, type FakeScript } from "./fake-pi-backend.ts";
 import { securityProfiles, toolList, turnOn } from "./host-tools.ts";
@@ -106,7 +107,7 @@ function makeHost(options: HostOptions = {}) {
 	} as unknown as ExtensionAPI;
 	// The tripwires under whatever the case registered: a host here that named only claude still gets no pi or codex
 	// backend it could run, and a case that injects one of its own puts it over these.
-	fusion(api, { backends: { ...tripwires(), ...options.backends }, profiles: options.profiles ?? memoryProfileStore() });
+	fusion(api, { backends: { ...tripwires(), ...options.backends }, profiles: options.profiles ?? memoryProfileStore(), settings: memorySettingsStore() });
 	const sessionManager: Record<string, unknown> = { getSessionId: () => options.sessionId ?? "host-1", getBranch: () => branch };
 	if (options.sessionFile !== undefined) sessionManager.getSessionFile = () => options.sessionFile;
 	const editors: Array<{ title: string; prefill?: string }> = [];
@@ -1991,7 +1992,7 @@ test("a codex role is bound before it reaches a registered codex backend, and th
 	const done = await host.fusion({ role: "implement", task: "do the thing" });
 	assert.equal(done.error, undefined);
 	const runtime = codex.starts[0]!.role as unknown as Record<string, unknown>;
-	assert.deepEqual(runtime, { name: "implement", contract: "implement.md", addendum: "codex-no-questions.md", sandboxMode: "workspace-write", approvalPolicy: "never" });
+	assert.deepEqual(runtime, { name: "implement", contract: "implement.md", sandboxMode: "workspace-write", approvalPolicy: "never" });
 	assert.equal("model" in runtime, false, "the runtime is never handed the display label as a model");
 	assert.deepEqual(codex.starts[0]!.session, { kind: "new", intent: { kind: "new" } });
 	// The stats line names the host default and what the child reported it was, and the thread to reopen.
@@ -2003,7 +2004,7 @@ test("a codex role is bound before it reaches a registered codex backend, and th
 	// A call naming codex and a model is bound with that model and shown on it alone.
 	const named = await host.fusion({ role: "ask", task: "a question", backend: "codex", model: "gpt-5-codex", effort: "high" });
 	assert.equal(named.error, undefined);
-	assert.deepEqual(codex.starts[1]!.role, { name: "ask", model: "gpt-5-codex", effort: "high", contract: "ask-answer.md", addendum: "codex-no-questions.md", mode: "answer", sandboxMode: "read-only", approvalPolicy: "never" });
+	assert.deepEqual(codex.starts[1]!.role, { name: "ask", model: "gpt-5-codex", effort: "high", contract: "ask-answer.md", mode: "answer", sandboxMode: "read-only", approvalPolicy: "never" });
 	assert.match(named.text ?? "", /\[run-2 · ask · gpt-5-codex · /);
 	assert.deepEqual(claude.starts, [], "no claude child stood in for codex");
 	assert.deepEqual(tripwireReaches("codex"), [], "the own double stood in for the tripwire, which nothing reached");
@@ -2050,7 +2051,7 @@ test("a manual review by an ask role configured on codex is bound read-only on i
 		await host.command("review run-1");
 		assert.deepEqual(host.notices, ["run-2 reviews run-1 in the background; its report arrives as a message"]);
 		const reviewer = await codex.started();
-		assert.deepEqual(reviewer.role, { name: "ask", contract: "ask-review.md", addendum: "codex-no-questions.md", mode: "review", sandboxMode: "read-only", approvalPolicy: "never" }, "the reviewer is the configured codex ask role, not the security run's model");
+		assert.deepEqual(reviewer.role, { name: "ask", contract: "ask-review.md", mode: "review", sandboxMode: "read-only", approvalPolicy: "never" }, "the reviewer is the configured codex ask role, not the security run's model");
 		assert.deepEqual(reviewer.session, { kind: "new", intent: { kind: "new" } }, "nobody briefed the reviewer: it is a thread of its own");
 		await ended(host, "run-2");
 		assert.equal(pi.starts.length, 1, "no pi child reviewed it");
@@ -2175,7 +2176,7 @@ test("a codex plan run is continued implicitly from its recorded checkpoint, and
 	const host = makeHost({ backends: { codex: codex.backend }, profiles: profileWith({ plan: { enabled: true, backend: "codex" } }) });
 	assert.equal((await host.fusion({ role: "plan", task: "agree a plan", effort: "high" })).error, undefined);
 	await ended(host, "run-1");
-	assert.deepEqual(codex.starts[0]!.role, { name: "plan", effort: "high", contract: "plan.md", addendum: "codex-no-questions.md", sandboxMode: "workspace-write", approvalPolicy: "never" });
+	assert.deepEqual(codex.starts[0]!.role, { name: "plan", effort: "high", contract: "plan.md", sandboxMode: "workspace-write", approvalPolicy: "never" });
 	assert.deepEqual(host.entries()[0], { run: "run-1", role: "plan", backend: "codex", hostSessionId: "host-1", session: { backend: "codex", sessionId: "thread-1", checkpoint: "turn-1", baseline: first }, selection, contextTokens: 1_000, contextWindow: 100_000 });
 
 	// A plan call with no handle continues the latest codex plan run, resuming its thread at the recorded checkpoint on the
@@ -2185,7 +2186,7 @@ test("a codex plan run is continued implicitly from its recorded checkpoint, and
 	await ended(host, "run-1");
 	const resumed = codex.starts[1]!;
 	assert.deepEqual(resumed.intent, { kind: "resume", ref: { backend: "codex", sessionId: "thread-1", checkpoint: "turn-1", baseline: first } });
-	assert.deepEqual(resumed.role, { name: "plan", model: "gpt-5.5", provider: "openai", effort: "high", contract: "plan.md", addendum: "codex-no-questions.md", sandboxMode: "workspace-write", approvalPolicy: "never" });
+	assert.deepEqual(resumed.role, { name: "plan", model: "gpt-5.5", provider: "openai", effort: "high", contract: "plan.md", sandboxMode: "workspace-write", approvalPolicy: "never" });
 	assert.equal(resumed.prompt, "and the next step?", "a continuation is no handoff and carries no earlier report");
 	assert.deepEqual(host.entries()[1]!.session, { backend: "codex", sessionId: "thread-1", checkpoint: "turn-2", baseline: second });
 
@@ -2196,7 +2197,7 @@ test("a codex plan run is continued implicitly from its recorded checkpoint, and
 	assert.match(handed.text ?? "", /^run-2 is a fresh plan run: run-1's context had reached 50% of its window/);
 	const fresh = codex.starts[2]!;
 	assert.deepEqual(fresh.intent, { kind: "new" });
-	assert.deepEqual(fresh.role, { name: "plan", model: "gpt-5.5", effort: "high", contract: "plan.md", addendum: "codex-no-questions.md", sandboxMode: "workspace-write", approvalPolicy: "never" });
+	assert.deepEqual(fresh.role, { name: "plan", model: "gpt-5.5", effort: "high", contract: "plan.md", sandboxMode: "workspace-write", approvalPolicy: "never" });
 	assert.match(fresh.prompt, /## Agreed plan\n1\. do the thing\n2\. and the next/, "the fresh run carries the replaced run's last report as the plan so far");
 	await ended(host, "run-2");
 	// What the fresh thread read back is what it records, provider included: nothing pinned the old one.
@@ -2303,7 +2304,7 @@ test("PI_FUSION_AUTO_REVIEW gives a claude run an ask reviewer configured on cod
 		const done = await runThatChanged(host, claude, dir, { role: "implement", task: "add the retry" });
 		assert.equal(done.details.reviewedBy, "run-2");
 		const reviewer = await codex.started();
-		assert.deepEqual(reviewer.role, { name: "ask", model: "gpt-5-codex", contract: "ask-review.md", addendum: "codex-no-questions.md", mode: "review", sandboxMode: "read-only", approvalPolicy: "never" });
+		assert.deepEqual(reviewer.role, { name: "ask", model: "gpt-5-codex", contract: "ask-review.md", mode: "review", sandboxMode: "read-only", approvalPolicy: "never" });
 		assert.deepEqual(reviewer.session, { kind: "new", intent: { kind: "new" } });
 		await ended(host, "run-2");
 		assert.deepEqual(host.entries()[1], { run: "run-2", role: "ask", mode: "review", backend: "codex", hostSessionId: "host-1", session: { backend: "codex", sessionId: "thread-9" }, selection: { model: "gpt-5.5", provider: "openai" } });
@@ -2582,7 +2583,7 @@ test("/fusion off hides the fusion tools and starts nothing, and /fusion on give
 		assert.equal(host.notices.at(-1), "fusion is already off; turn it on with /fusion on");
 		assert.deepEqual(host.activeTools, ["read", "bash", "fusion_activate"], "a second off changes nothing");
 		await host.command("status");
-		assert.match(host.notices.at(-1) ?? "", /^fusion: off\nprofile: builtin\n\n[\s\S]*?\n\nrun-1 · implement · /);
+		assert.match(host.notices.at(-1) ?? "", /^fusion: off\nprofile: builtin\nhistory: [^\n]*\n\n[\s\S]*?\n\nrun-1 · implement · /);
 
 		// A call already in the host's turn when off was accepted still reaches the tools, and every one of them is refused.
 		assert.equal((await host.fusion({ role: "implement", task: "second", backend: "pi" })).error, OFF_REFUSAL);

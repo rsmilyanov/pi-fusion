@@ -27,7 +27,7 @@ Tests past 60 seconds are cancelled and named. Browser tests use `PI_FUSION_CHRO
 
 `extensions/fusion.ts` exports `fusion(pi, options?)`: delegation/control pairs `fusion`/`fusion_control` and compatibility `claude`/`claude_control`, two mode tools, `/fusion`, the run-message renderer, and `session_start`, `agent_settled`, `session_shutdown`, `session_before_tree` handlers.
 
-Load order: internal child marker, required contracts for every backend/ask mode (the Codex addenda included), Pi bootstrap existence, then backend registration. A Pi child with `PI_FUSION_CHILD=pi` registers nothing before any contract check; this is not a user setting.
+Load order: internal child marker, required contracts for every backend/ask mode, Pi bootstrap existence, then backend registration. A Pi child with `PI_FUSION_CHILD=pi` registers nothing before any contract check; this is not a user setting.
 
 - Host: mode, configuration, routing, handles, scheduling, questions, branch records; no direct backend-SDK import.
 - `backends/types.ts`: import-free, SDK-neutral requests/outcomes. Each backend owns its binding, session/role shapes, protocol, and SDK options; registration key must match backend name.
@@ -44,7 +44,7 @@ See [Pi backend](docs/pi-backend.md) and [Codex backend](docs/codex-backend.md) 
 - On/off share synchronous implementations. Off refuses every unfinished run (running, waiting, finishing), cancels nothing, respects allow lists/exclusions, and preserves unrelated active tools.
 - Tool activation arms one reminder on the **host's** `agent_settled`: clear before notification, suppress for `/fusion on`, clear on successful off. It is neither child completion nor automatic deactivation.
 - Settings apply only with no unfinished run. Application/admission binding remain synchronous after the last await. Refresh preserves the entire active-tool list; on failure roll settings back and attempt guidance/list restoration, not guaranteed recovery.
-- Builtin disables `security` (Pi-only); enable it through settings/profiles, not a model parameter/variable. Saved profiles keep their enabled settings. Ultracode is Claude-only. Codex supports `plan`/`implement`/`ask` (experimental; see [Codex evidence](docs/codex-backend.md#evidence)), and builtin routes nothing there.
+- Builtin disables `security` (Pi-only); enable it through settings/profiles, not a model parameter/variable. Saved profiles keep their enabled settings. Ultracode is Claude-only. Codex supports `plan`/`implement`/`ask` (see [Codex evidence](docs/codex-backend.md#evidence)), and builtin routes nothing there.
 - Disabled roles refuse fresh calls and continuations before a handle. Role/profile lookups use own properties, never inherited keys.
 - Fresh calls use configured routing unless overridden; another backend uses its captured legacy defaults, not the configured backend's selection. Continuations retain recorded backend/settings unless permitted fields are explicitly overridden.
 - Independent review is a fresh configured `ask` run, inheriting nothing from the source. Disabled ask refuses manual review and quietly skips automatic review.
@@ -65,7 +65,7 @@ See [Pi backend](docs/pi-backend.md) and [Codex backend](docs/codex-backend.md) 
 - Resume requires the exact recorded tip. A fork requires a verified different thread id and records its own completed starting tip, never the source's, without a baseline.
 - Per-call usage is the total less the baseline in five core counts. A fresh thread names no provider; a plan handoff carries model/effort only. Cost is unknown and never estimated.
 - Steers are one-shot to the admitted turn: accepted is queued, not consumed; nothing retries or replays.
-- Only a question callback opts the whole connection into the experimental API and drops the no-questions addendum. Fresh threads register `ask_orchestrator`; resumes/forks register nothing and rely on Codex's restored tool. Continued runs with a callback add the fallback because older threads may lack the tool and are never upgraded.
+- Every backend run requires a callable question callback before contract read, lookup or spawn (already cancelled calls remain cancellation). The whole connection opts into the experimental API. Fresh threads register `ask_orchestrator`; resumes/forks register nothing and trust Codex's restoration. Only shared role contracts are injected; no inventory probe, capability marker or tool-less-thread fallback.
 - Questions come only from the run's own live turn, each answered once and never on the read loop. Other `ask_orchestrator` calls get `success: false` without failing the run. See [Questions](docs/questions.md#on-codex).
 - Success requires admitted-turn completion, a final message, usage at/above the baseline, idle readback, verified selection (reroutes are telemetry, not selection), and clean shutdown.
 

@@ -23,9 +23,9 @@ import { KNOWN_ROLE_NAMES, runsOn } from "../extensions/roles.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const NO_ENV = {} as NodeJS.ProcessEnv;
-const IMPLEMENT = { name: "implement", contract: "implement.md", addendum: "codex-no-questions.md", sandboxMode: "workspace-write", approvalPolicy: "never" } as const;
-const PLAN = { name: "plan", contract: "plan.md", addendum: "codex-no-questions.md", sandboxMode: "workspace-write", approvalPolicy: "never" } as const;
-const ask = (mode: "answer" | "review") => ({ name: "ask", contract: `ask-${mode}.md`, addendum: "codex-no-questions.md", mode, sandboxMode: "read-only", approvalPolicy: "never" }) as const;
+const IMPLEMENT = { name: "implement", contract: "implement.md", sandboxMode: "workspace-write", approvalPolicy: "never" } as const;
+const PLAN = { name: "plan", contract: "plan.md", sandboxMode: "workspace-write", approvalPolicy: "never" } as const;
+const ask = (mode: "answer" | "review") => ({ name: "ask", contract: `ask-${mode}.md`, mode, sandboxMode: "read-only", approvalPolicy: "never" }) as const;
 
 test("the codex binding binds the roles the role table runs on codex, and no other", () => {
 	assert.deepEqual([...CODEX_ROLE_NAMES], KNOWN_ROLE_NAMES.filter((role) => runsOn(role, "codex")));
@@ -46,7 +46,7 @@ test("a role that names no model binds none, so the host's own codex default is 
 	assert.deepEqual(codexRole({ role: "ask" }, undefined, NO_ENV), ask("answer"));
 	assert.deepEqual(codexRole({ role: "ask", mode: "review" }, undefined, NO_ENV), ask("review"));
 	const plan = codexRole({ role: "plan" }, undefined, NO_ENV);
-	assert.deepEqual(plan, PLAN, "a plan run reads the shared plan contract under the addendum");
+	assert.deepEqual(plan, PLAN, "a plan run reads only the shared plan contract");
 	for (const field of ["model", "provider", "effort", "mode"]) assert.equal(field in plan, false, `${field} is held as a key though nothing named it`);
 });
 
@@ -122,36 +122,15 @@ test("a value no codex child could take is refused with the setting it came from
 	assert.throws(() => codexRole({ role: "implement" }, { model: "gpt 5.5", provider: "openai" }, NO_ENV), /^Error: the selection the run it continues ran with names model "gpt 5\.5"/);
 });
 
-test("every contract a codex role runs under is a shipped file, and the addendum says how a codex child does without questions", () => {
-	assert.deepEqual([...CODEX_CONTRACT_FILES].sort(), ["ask-answer.md", "ask-review.md", "codex-continued-questions.md", "codex-no-questions.md", "implement.md", "plan.md"]);
+test("every codex role names only a shipped shared contract, with no backend-specific question fallback", () => {
+	assert.deepEqual([...CODEX_CONTRACT_FILES].sort(), ["ask-answer.md", "ask-review.md", "implement.md", "plan.md"]);
 	for (const name of CODEX_CONTRACT_FILES) assert.ok(fs.existsSync(path.join(repoRoot, "contracts", name)), `contracts/${name} is not shipped`);
-	const addendum = fs.readFileSync(path.join(repoRoot, "contracts", "codex-no-questions.md"), "utf8");
-	assert.match(addendum, /no ask_orchestrator tool/);
-	assert.match(addendum, /A message from the user or the orchestrator may arrive while you work\. It is not an answer to a question of yours\./);
-	assert.doesNotMatch(addendum, /no message or steer arrives/, "a codex run's input is open, so the addendum no longer says nothing arrives");
-	assert.match(addendum, /under Escalation/);
-	assert.match(addendum, /under Escalation for an implement report, under Open questions for a plan or an ask answer, and under Notes for an ask review/);
-	// Each section the addendum sends a missing decision to is one the shared contract of that role and mode really has,
-	// so a review is never told to write under an Open questions heading its report shape lacks.
-	const sections: Array<[string, string]> = [
-		["implement", "Escalation"],
-		["plan", "Open questions"],
-		["ask-answer", "Open questions"],
-		["ask-review", "Notes"],
-	];
-	for (const [contract, section] of sections) {
-		const text = fs.readFileSync(path.join(repoRoot, "contracts", `${contract}.md`), "utf8");
-		assert.match(text, new RegExp(`^## ${section}$`, "m"), `contracts/${contract}.md has no ${section} section for the addendum to point at`);
+	for (const role of CODEX_ROLE_NAMES) {
+		for (const mode of role === "ask" ? CODEX_MODES : [undefined]) {
+			const bound = codexRole({ role, ...(mode === undefined ? {} : { mode }) }, undefined, NO_ENV);
+			assert.ok(CODEX_CONTRACT_FILES.includes(bound.contract));
+			assert.equal("addendum" in bound, false);
+			assert.match(fs.readFileSync(path.join(repoRoot, "contracts", bound.contract), "utf8"), /ask_orchestrator/);
+		}
 	}
-	assert.doesNotMatch(fs.readFileSync(path.join(repoRoot, "contracts", "ask-review.md"), "utf8"), /^## Open questions$/m, "the review shape has no Open questions section");
-	assert.match(addendum, /end your report/);
-	assert.match(addendum, /Do not commit/);
-	assert.match(addendum, /Hosted web search is Codex's own tool/);
-	assert.match(addendum, /only when the host's Codex configuration allows it/);
-	assert.match(addendum, /name each source/);
-	// A continuation that can ask may still have no tool: the fallback sends the gap to the same sections as the addendum.
-	const continued = fs.readFileSync(path.join(repoRoot, "contracts", "codex-continued-questions.md"), "utf8");
-	assert.match(continued, /If ask_orchestrator is not among your tools, do not ask in your output/);
-	assert.match(continued, /under Escalation for an implement report, under Open questions for a plan or an ask answer, and under Notes for an ask review/);
-	assert.equal(continued.trim().split("\n").length, 1, "one paragraph");
 });

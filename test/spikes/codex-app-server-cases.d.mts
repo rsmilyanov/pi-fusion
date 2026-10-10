@@ -39,7 +39,6 @@ export interface BodyRole {
 	sandboxMode: string;
 	approvalPolicy: string;
 	contract: string;
-	addendum: string;
 }
 export declare function composeInstructions(role: BodyRole, read: (name: string) => string): string;
 export declare function threadParams(role: BodyRole, instructions: string): { model?: string; modelProvider?: string; sandbox: string; approvalPolicy: string; developerInstructions: string };

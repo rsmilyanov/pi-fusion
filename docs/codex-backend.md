@@ -1,6 +1,6 @@
 # The Codex backend
 
-**Registered, experimental, and opt-in.** Codex supports `plan`, `implement`, and `ask`; builtin routes no role there. Name `backend: "codex"` or configure a role in [settings](profiles.md). Code defines current behavior; [Evidence](#evidence) records the narrower qualification scope.
+**Registered and opt-in.** Codex supports `plan`, `implement`, and `ask`; builtin routes no role there. Name `backend: "codex"` or configure a role in [settings](profiles.md). Code defines current behavior; [Evidence](#evidence) records the narrower qualification scope.
 
 ## Architecture
 
@@ -31,7 +31,7 @@ Sources: [`codex.ts`](../extensions/backends/codex.ts), [`codex-outcome.ts`](../
 | Plan scope | Shared contract permits only its own notes/scratch files, as on every backend |
 | Unavailable | `ultracode`, `security`, `fresh` outside `plan`, or `mode` outside `ask`: refused before admission |
 | Sessions | Fresh threads; resume/fork only with a trusted checkpoint, paired usage baseline, and repeatable selection |
-| Questions | Whole-connection experimental API opt-in; fresh threads register `ask_orchestrator`, continued threads rely on restored tools ([Questions](questions.md#on-codex)) |
+| Questions | Required callback; whole-connection experimental API opt-in; fresh threads register `ask_orchestrator`, continuations trust its restoration ([Questions](questions.md#on-codex)) |
 | Controls | `status`, `wait`, `cancel`, and one-shot steers to the admitted turn |
 | Writer slot | `plan`/`implement` hold the single file-changing slot across backends; `ask` may run beside them |
 | Reviews | Fresh configured `ask` run; inherits nothing from its source; disabled ask refuses manual review and quietly skips automatic review |
@@ -72,8 +72,9 @@ Source: [`runCodexCall` / `drive`](../extensions/backends/codex.ts).
 map new/resume/fork intent
   | invalid continuation -> refuse before contract read, lookup or spawn
   | already cancelled    -> finish without starting a child
+  | no callable question callback -> refuse before contract read, lookup or spawn
   v
-read role contract + applicable question addendum
+read shared role contract only
   -> locate binary / compose launch / read client version
   -> spawn -> initialize -> initialized -> verify reported home
   v
@@ -93,7 +94,7 @@ turn.done -> close input -> completed result / terminal-error check
 
 | Request | Fields Fusion supplies |
 | --- | --- |
-| Thread start | Optional model; sandbox, approval, developer instructions; dynamic question tool only with a callback |
+| Thread start | Optional model; sandbox, approval, shared developer instructions; the dynamic question tool |
 | Resume | Thread id, recorded provider/selection, role fields, `excludeTurns: true`; no tool registration |
 | Fork | Source thread, checkpoint as `lastTurnId`, recorded provider/selection, role fields, `excludeTurns: true`; no tool registration |
 | Turn start | Thread id, text input, optional effort; no model/provider/cwd/sandbox |
@@ -149,7 +150,7 @@ plan call without continue
 explicit continue -> exact named run; warn at cap, never hand off
 ```
 
-The role uses `contracts/plan.md` and `workspace-write`. Question addenda follow [Questions](questions.md#on-codex). Reading a record cannot prove its thread is still at the checkpoint; the backend checks the tip before a turn. A continuation refused for an unusable record or moved tip does not trigger a fallback handoff; use `fresh: true`.
+The role uses only `contracts/plan.md` and `workspace-write`, with the required [question callback](questions.md#on-codex). Reading a record cannot prove its thread is still at the checkpoint; the backend checks the tip before a turn. A continuation refused for an unusable record or moved tip does not trigger a fallback handoff; use `fresh: true`.
 
 A cap handoff carries recorded model and effort unless overridden; a model handoff uses the named model and call/configured effort. **No handoff carries the provider:** a fresh thread uses the host's own Codex provider, unchecked against the earlier run. Only continuations pin it. See [The context cap](runs.md#the-context-cap).
 
@@ -300,7 +301,7 @@ Earlier passes remain historical evidence of the stable connection. G3 re-measur
 
 Unmeasured natively:
 
-- `plan` calls/handoffs; `implement` continuations, steers and questions; continued-questions fallback; host answer/writer/lifecycle races (fake/double-tested).
+- `plan` calls/handoffs; `implement` continuations, steers and questions; callback admission and shared-contract-only continuations; host answer/writer/lifecycle races (fake/double-tested).
 - Fork through an older checkpoint, hosted search, named-effort override (Q3b not run), cache-write/input relationship, exact context occupancy, USD cost, or CLI recovery via `codex resume`.
 - Host answer UI, a question abandoned or held until timeout, other versions/platforms, or provider/model/default switches.
 - Sandbox/kernel policy was not audited. Whole-connection experimental opt-in may enable other features; nothing claims isolation or absence of other network/inference activity.
@@ -308,6 +309,8 @@ Unmeasured natively:
 ### Qualification harness
 
 [`test/spikes/codex-app-server.mjs`](../test/spikes/codex-app-server.mjs) owns execution; [`codex-app-server-cases.mjs`](../test/spikes/codex-app-server-cases.mjs) owns CLI/catalogue/verdict helpers. [Development](development.md#codex-app-server) owns commands, consent and evidence-recording instructions.
+
+Current backend legs all supply the required question callback; non-question cases fail on an unexpected question rather than inventing an answer. Model-free cases and Q14 still drive the lower-level transport without one. This does not re-qualify the historical G1/G2 measurements or turn their stable connections into evidence of the shipping opt-in shape.
 
 ```text
 missing --run / --case, help/list, malformed/unmatched args

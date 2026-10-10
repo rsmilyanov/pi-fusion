@@ -21,7 +21,7 @@
  * inherited and nothing isolated), `startCodexChild`, and for every turn `createCodexBackend` with only these seams of
  * the harness's own: a launch that calls the production `codexLaunch` and keeps its answer, a start that calls the
  * production `startCodexChild` and records what its child answered (the raw notifications included, for command
- * items), `onCall`, and for Q3 alone a contract reader that appends a nonce to the shipped addendum. Model-free cases
+ * items), `onCall`, a question callback, and for Q3 alone a contract reader that appends a nonce to the shared contract. Model-free cases
  * drive the transport directly with the thread/start body the backend composes, and so does Q14, which starts two
  * turns on one thread with the production transport because the backend runs one. No request names a cwd, a sandbox
  * policy or a configuration override, and `fusion.ts` and the host runtime take no part.
@@ -32,10 +32,11 @@
  * steer) and keeps only safe facts of them: ids, selection fields, byte counts and answers' tags. Q11 alone adds one
  * direct-transport turn between two backend calls, to move the thread's tip with a turn that really completed.
  *
- * G3's cases (Q15, Q16) are the only ones whose backend calls carry a question callback, with the signature the host
- * passes, so only they run the experimental connection shape every delegated run now uses: the opt-in at the
- * handshake and the question tool on a fresh thread, both the transport's. Every earlier case runs with none. An answer
- * is made inside the callback, a new random one per call, and never printed; nor is a question or a report.
+ * Every backend call carries the required question callback and so the shipping experimental connection shape. G3's
+ * cases (Q15, Q16) script answers or waiting cancellation; other backend cases fail if a question is unexpectedly
+ * asked rather than inventing an answer. Model-free cases and Q14 drive the lower-level transport without a callback.
+ * Historical G1/G2 measurements predate this requirement and remain evidence of their stable connections only. G3
+ * makes a new random answer per call inside its callback and prints no answer, question or report.
  *
  * What it never does. It copies, reads or prints no credential or auth file, logs in to nothing, injects no API key,
  * prints no environment, and writes no Codex configuration. `config.toml` in the predicted Codex home is hashed in
@@ -495,9 +496,9 @@ async function preflightStart(ctx, result, cwd, call) {
  * keeps, of the stage 2 ones, only safe facts: the request's ids and selection fields, the latest-turn answers, and
  * each steer's key, byte count and outcome. `fakeExtra` is a fake child's cross-process history, never native.
  *
- * `onQuestion`, when given, becomes the run's own question callback, `(question, signal)` as the host passes one, and
- * is handed the run's controller and record beside them; the record counts its calls and whether the turn it came on
- * had already completed. With none, the run has no callback, as every case before G3's.
+ * Every run gets a question callback, `(question, signal)` as the host passes one. A scripted `onQuestion` is handed
+ * the run's controller and record beside them; without one an unexpected question fails the case and the callback.
+ * The record counts calls and whether their turn had already completed.
  */
 async function backendRun(ctx, result, { call, prompt, cwd, leg, scenario = "ok", intent = { kind: "new" }, recorded, fakeExtra, readContract, onNotification, onTurn, onQuestion, deadlineMs = MODEL_CASE_MS, allowAborted = false }) {
 	const { mod } = ctx;
@@ -529,16 +530,17 @@ async function backendRun(ctx, result, { call, prompt, cwd, leg, scenario = "ok"
 		deadlineHit = true;
 		controller.abort();
 	}, deadlineMs);
-	const ask =
-		onQuestion === undefined
-			? undefined
-			: (question, signal) => {
-					record.questions += 1;
-					// The turn/start answer may not have reached the record yet: a question held for it is asked as it lands.
-					if (record.turn?.snapshot().completion !== undefined) record.questionAfterCompletion = true;
-					return onQuestion(question, signal, controller, record);
-				};
-	const running = backend.run({ role, prompt, cwd, session, signal: controller.signal, input: record.input, ...(ask === undefined ? {} : { onQuestion: ask }), onProgress: () => {}, onEvent: () => {} });
+	const ask = (question, signal) => {
+		record.questions += 1;
+		// The turn/start answer may not have reached the record yet: a question held for it is asked as it lands.
+		if (record.turn?.snapshot().completion !== undefined) record.questionAfterCompletion = true;
+		if (onQuestion === undefined) {
+			result.fail("the child asked a question but this case has no scripted answer");
+			throw new Error("no scripted answer for an unexpected question");
+		}
+		return onQuestion(question, signal, controller, record);
+	};
+	const running = backend.run({ role, prompt, cwd, session, signal: controller.signal, input: record.input, onQuestion: ask, onProgress: () => {}, onEvent: () => {} });
 	let settled = await bounded(running, deadlineMs + SETTLE_MS);
 	clearTimeout(timer);
 	ctx.abort.signal.removeEventListener("abort", cancel);
@@ -981,7 +983,7 @@ const RUNNERS = {
 		const role = ctx.mod.codexRole({ role: "implement" }, undefined, {});
 		const readContract = (name) => {
 			const text = productionContract(ctx.mod, name);
-			return name === role.addendum ? `${text.trimEnd()}\n\nHARNESS_NONCE: ${nonce}\nThis manual qualification value appears only in these developer instructions; write it only where a task asks for it.\n` : text;
+			return name === role.contract ? `${text.trimEnd()}\n\nHARNESS_NONCE: ${nonce}\nThis manual qualification value appears only in these developer instructions; write it only where a task asks for it.\n` : text;
 		};
 		const prompt = "In target.txt in the current directory, replace the line `status: old` with `status: new`. Then create a file named nonce.txt in the current directory whose only content is the HARNESS_NONCE value from your developer instructions, followed by a newline. Change nothing else.";
 		result.guard(!prompt.includes(nonce), "the prompt does not carry the nonce");

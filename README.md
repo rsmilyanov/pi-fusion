@@ -1,6 +1,6 @@
 # pi-fusion
 
-A [Pi](https://pi.dev) extension for handing work to headless Claude Code, Pi, or (experimental) Codex sessions. The **host** talks with you; a **child** plans, implements, answers, or reviews a bounded task.
+A [Pi](https://pi.dev) extension for handing work to headless Claude Code, Pi, or Codex sessions. The **host** talks with you; a **child** plans, implements, answers, or reviews a bounded task.
 
 Fusion starts **off**. Type `/fusion on`, or ask “use Fusion to implement this.” It stays on until `/fusion off`, an explicit request to turn it off, or the extension reloads. Turning it on starts no child. After natural-language activation, one reminder tells you that Fusion remains on; finishing a task does not turn it off.
 
@@ -34,11 +34,11 @@ Off is refused while a run is running, waiting for an answer, or finishing its r
 - `npm install` installs the Claude Agent SDK and its bundled Claude Code binary (about 200 MB). A separate `claude` executable on `PATH` is not required.
 - For Claude children, Claude Code authentication on this machine and access to the configured models. Children use that account's capacity; the SDK's dollar estimate is not a subscription charge. See Anthropic's [subscription guidance](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
 - For Pi children, an importable npm installation of Pi, `node` on `PATH`, and a configured/authenticated provider and model. A compiled Pi binary cannot supply the package a child imports. See [Pi backend requirements and limits](docs/pi-backend.md).
-- For Codex children (optional, experimental), an installed `codex` with its own login/configuration. Located only at run start via `PATH` or absolute `PI_FUSION_CODEX_BIN`; Fusion installs/authenticates nothing and adds no dependency. Missing Codex does not prevent extension load; Windows runs refuse. See [inherited install](docs/codex-backend.md#inheritance-not-isolation) and [qualification limits](docs/codex-backend.md#evidence).
+- For Codex children (optional), an installed `codex` with its own login/configuration. Located only at run start via `PATH` or absolute `PI_FUSION_CODEX_BIN`; Fusion installs/authenticates nothing and adds no dependency. Missing Codex does not prevent extension load; Windows runs refuse. See [inherited install](docs/codex-backend.md#inheritance-not-isolation) and [qualification limits](docs/codex-backend.md#evidence).
 
 ## Roles and backends
 
-Claude and Pi are registered, with an experimental Codex backend beside them. Profiles select the backend, model, effort, and enabled setting of each role.
+Claude, Pi, and Codex backends are registered. Profiles select the backend, model, effort, and enabled setting of each role.
 
 | Role | Purpose | Supported backends | Built-in setting |
 | --- | --- | --- | --- |
@@ -58,7 +58,7 @@ Pi roles have no model default. For example, the host can call `fusion` with:
 
 Alternatively, configure that role through `/fusion config` or `PI_FUSION_PI_IMPLEMENT_MODEL`. A profile can route fresh runs to Pi without a `backend` parameter. Continuations stay on their recorded backend and selection unless a permitted model/effort override is supplied. Nothing falls back to Claude when a Pi call fails.
 
-Codex is **experimental** and opt-in: name `backend: "codex"` or configure a role there; builtin routes nothing to it. Model and effort may be omitted to use your own Codex defaults. Children inherit your Codex home, configuration, and login, and delegated connections opt into its experimental question API. Cost is unknown and excluded from the dollar estimate. See [Codex behavior and qualification limits](docs/codex-backend.md).
+Codex is opt-in: name `backend: "codex"` or configure a role there; builtin routes nothing to it. Model and effort may be omitted to use your own Codex defaults. Children inherit your Codex home, configuration, and login, and delegated connections opt into its experimental question API. Cost is unknown and excluded from the dollar estimate. See [Codex behavior and qualification limits](docs/codex-backend.md).
 
 The host's routing guidance is: plan when the design is unresolved, implement bounded tasks in dependency order, and use `ultracode` only when you ask. [Role settings](docs/profiles.md) can disable any role. The [contracts](contracts/) define each child's behavior; these instructions are not a sandbox or permission boundary.
 

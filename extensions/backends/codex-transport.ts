@@ -463,7 +463,7 @@ export interface CodexThreadStartParams {
 	modelProvider?: string;
 	sandbox: CodexSandboxRequest;
 	approvalPolicy: "never";
-	/** The role's contract and addendum, non-empty and at most `maxInstructionsBytes`. */
+	/** The role's shared contract, non-empty and at most `maxInstructionsBytes`. */
 	developerInstructions: string;
 }
 

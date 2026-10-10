@@ -57,6 +57,7 @@ import { ArchiveIndex } from "./dashboard-archive.ts";
 import { contextShare, continueNote, handoffBlocked, handoffNote, handoffPrompt, handoffShare, planContextPct, planProblems, sharePercent, type HandoffReason } from "./handoff.ts";
 import { asEnded, History, type HistoryRecord, historyDir, historyEnabled, sameChild } from "./history.ts";
 import { hostProfileStore, type ProfileStore } from "./profile-store.ts";
+import { hostSettingsStore, type SettingsStore } from "./settings-store.ts";
 import {
 	type Baseline,
 	BUILTIN,
@@ -1391,11 +1392,12 @@ function handleNumber(handle: string): number {
 	return Number(HANDLE.exec(handle)?.[1] ?? 0);
 }
 
-const FUSION_ARGS = ["dashboard", "dashboard stop", "dashboard limit", "status", "cancel", "steer", "wait", "answer", "review", "on", "off", "config", "profile", "profile list", "profile use", "profile save", "profile default"];
+const FUSION_ARGS = ["dashboard", "dashboard stop", "dashboard limit", "status", "cancel", "steer", "wait", "answer", "review", "on", "off", "config", "profile", "profile list", "profile use", "profile save", "profile default", "history", "history on", "history off"];
 const USAGE =
-	"Usage: /fusion dashboard | /fusion dashboard stop | /fusion dashboard limit [N] | /fusion status [run-N] | /fusion cancel run-N | /fusion wait run-N | /fusion steer run-N <text> | /fusion answer [run-N] [text] | /fusion review run-N | /fusion on | /fusion off | /fusion config | /fusion profile [list | use <name> | save <name> | default <name>]";
+	"Usage: /fusion dashboard | /fusion dashboard stop | /fusion dashboard limit [N] | /fusion status [run-N] | /fusion cancel run-N | /fusion wait run-N | /fusion steer run-N <text> | /fusion answer [run-N] [text] | /fusion review run-N | /fusion on | /fusion off | /fusion config | /fusion profile [list | use <name> | save <name> | default <name>] | /fusion history [on | off]";
 const DASHBOARD_LIMIT_USAGE = "Usage: /fusion dashboard limit [N]; N must be a positive decimal safe integer";
 const PROFILE_USAGE = "Usage: /fusion profile [list | use <name> | save <name> | default <name>]; builtin names the built-in configuration for use and default";
+const HISTORY_USAGE = "Usage: /fusion history [on | off]; on and off save the run history preference for new Fusion instances and leave this one as it started";
 /** A /fusion profile argument list that names a profile, as far as it is typed, for completion. */
 const PROFILE_ARG = /^profile\s+(use|save|default)\s+(\S*)$/;
 /** A /fusion argument list that names a run, as far as it is typed, for completion. */
@@ -1419,6 +1421,8 @@ export type FusionCommand =
 	| { kind: "profile-use"; name: string }
 	| { kind: "profile-save"; name: string }
 	| { kind: "profile-default"; name: string }
+	| { kind: "history" }
+	| { kind: "history-set"; enabled: boolean }
 	| { kind: "usage"; message: string };
 
 /** The command a /fusion argument list names, or the usage when it names none. */
@@ -1448,6 +1452,10 @@ export function parseFusion(args: string): FusionCommand {
 			return second === "use" ? { kind: "profile-use", name } : second === "save" ? { kind: "profile-save", name } : { kind: "profile-default", name };
 		}
 		return { kind: "usage", message: PROFILE_USAGE };
+	}
+	if (first === "history") {
+		if (tokens.length === 1) return { kind: "history" };
+		return tokens.length === 2 && (second === "on" || second === "off") ? { kind: "history-set", enabled: second === "on" } : { kind: "usage", message: HISTORY_USAGE };
 	}
 	if (first === "on") return tokens.length === 1 ? { kind: "on" } : usage;
 	if (first === "off") return tokens.length === 1 ? { kind: "off" } : usage;
@@ -1511,6 +1519,7 @@ const guidelines = (tool: string, control: string, roles: RoleSettings, options:
 	}
 	lines.push(
 		`A ${tool} call with continue is never handed off, because you named the run. Past the cap its result says so and names what a fresh run would take instead; act on that when the next step can stand on its own, and keep continuing the run while it cannot.`,
+		`Write ${tool} tasks and context in normal, readable prose. Preserve spaces between words; do not concatenate words to shorten prompts.`,
 		`You orchestrate ${tool} runs and do not implement: delegate implementation in dependency order, pass earlier results on as context, check each report against the task's acceptance criteria before the next task${on("ask") ? `, and review the change with ${askTool} role ask and mode review` : ""}; do not edit files yourself. When a run fails, report its failure message rather than doing the task yourself.`,
 	);
 	if (on("implement") || on("ultracode")) {
@@ -1564,15 +1573,15 @@ const steerTaken = (run: { handle: string; backend: BackendName }): string =>
 		: `steer sent to ${run.handle}; the child reads it when it next takes input`;
 
 /**
- * What a run on Codex is, said wherever a role goes there: its child asks through the question tool, experimentally,
- * as any child does; a message to it is one steer its current turn may take, never a delivery anyone confirmed; and it is
+ * What a run on Codex is, said wherever a role goes there: its child asks through the question tool as any child does;
+ * a message to it is one steer its current turn may take, never a delivery anyone confirmed; and it is
  * continued as any run is, but only from the exact turn its record names. Both tools carry it, each in its own name,
  * and it sends the work to fusion, the one tool that runs Codex.
  */
 const codexGuideline = (tool: string, roles: readonly KnownRoleName[]): string => {
 	const named = roles.map((role, at) => `${at ? "role" : "Role"} ${role}`);
 	const list = named.length === 1 ? named[0]! : `${named.slice(0, -1).join(", ")} and ${named.at(-1)!}`;
-	return `${list} ${roles.length === 1 ? "runs" : "run"} on codex in this session${tool === TOOL_NAME ? "" : `, which fusion runs and ${tool} does not`}. A codex child can ask you a question, experimentally, and waits for your answer as any child does. A message to a running codex run is one steer to its current turn, sent once and never retried: a steer the turn took is queued input, not proof the child read it, and the run's report counts what became of each. Continue a codex run with fusion and continue, as any run: it goes on only from the exact turn its record names, and a thread that has moved since is refused rather than continued from wherever it is now.`;
+	return `${list} ${roles.length === 1 ? "runs" : "run"} on codex in this session${tool === TOOL_NAME ? "" : `, which fusion runs and ${tool} does not`}. A codex child can ask you a question and waits for your answer as any child does. A message to a running codex run is one steer to its current turn, sent once and never retried: a steer the turn took is queued input, not proof the child read it, and the run's report counts what became of each. Continue a codex run with fusion and continue, as any run: it goes on only from the exact turn its record names, and a thread that has moved since is refused rather than continued from wherever it is now.`;
 };
 
 /**
@@ -1628,6 +1637,11 @@ export interface FusionOptions {
 	 * resolved on first use; every test host passes a store of its own so no case reads or writes that file.
 	 */
 	profiles?: ProfileStore;
+	/**
+	 * Where Fusion's own settings are read and saved. Left out, it is the user's own `pi-fusion/settings.json` under the
+	 * host agent directory, resolved on first use; every test host passes a store of its own so no case reads or writes it.
+	 */
+	settings?: SettingsStore;
 	/** How the dashboard server starts. Left out, it is this build's own; a test host passes one that sees what it is given. */
 	dashboard?: typeof startDashboard;
 }
@@ -1640,9 +1654,8 @@ export default function fusion(pi: ExtensionAPI, options: FusionOptions = {}) {
 	// registers the ordinary surface, because a marker this build does not know is not a child of this build.
 	if (process.env.PI_FUSION_CHILD === "pi") return;
 	// Every contract any role of any backend can run under, in one check: the Claude roles' own, the ask modes', the Pi
-	// bindings' and the Codex bindings', addendum included, which is where a contract no Claude role names comes from. An
-	// install missing one of them is a broken install whichever backend would have run it, so none of them waits for a
-	// call to find out.
+	// bindings' and the Codex bindings'. An install missing one is broken whichever backend would have run it, so none
+	// waits for a call to find out.
 	for (const name of new Set([...Object.values(ROLES).map((role) => role.contract), ...Object.values(ASK_CONTRACTS), ...PI_CONTRACT_FILES, ...CODEX_CONTRACT_FILES])) {
 		const contract = path.join(CONTRACTS_DIR, name);
 		if (!fs.existsSync(contract)) throw new Error(`pi-fusion: missing contract ${contract}`);
@@ -1677,7 +1690,7 @@ export default function fusion(pi: ExtensionAPI, options: FusionOptions = {}) {
 	}
 	// Constructing a Pi or a Codex backend takes nothing: neither factory reads a file, resolves a path, looks for a
 	// binary or starts anything, so a host that never delegates to one pays for its line and no more, and a machine with
-	// no `codex` installed loads this extension, Claude and Pi as before. The Codex backend is experimental.
+	// no `codex` installed loads this extension, Claude and Pi as before.
 	// The host's own registrations are spread last and as they are: a key it set to undefined is a backend it left out,
 	// never one this build's default stands in for, and only its own keys are read, never inherited ones.
 	const backends: Partial<Record<BackendName, HostBackend>> = { claude: hostBackend(claudeBackend), pi: hostBackend(createPiBackend()), codex: hostBackend(createCodexBackend()), ...options.backends };
@@ -1734,9 +1747,11 @@ export default function fusion(pi: ExtensionAPI, options: FusionOptions = {}) {
 	 */
 	const initialize = (): Promise<void> =>
 		(initializing ??= (async () => {
+			const choosing = chooseSettings();
 			try {
 				await loadDefault();
 			} finally {
+				await choosing;
 				initialized = true;
 			}
 		})());
@@ -1762,6 +1777,43 @@ export default function fusion(pi: ExtensionAPI, options: FusionOptions = {}) {
 			profileWarning = `the default profile ${name} was not applied: ${error instanceof Error ? error.message : String(error)}; this session uses the ${BUILTIN} configuration`;
 		}
 	};
+
+	/**
+	 * Reads global settings once per instance, before routing or history access. A saved history preference beats its
+	 * variable; the plan cap instead uses its captured variable when non-blank, then the saved cap, then the default.
+	 * An unreadable file is left alone: captured variables decide and one warning names the resulting behavior.
+	 */
+	const chooseSettings = (): Promise<void> =>
+		(choosingSettings ??= (async () => {
+			let saved: boolean | undefined;
+			let trouble: string | undefined;
+			try {
+				const settings = await settingsStore.read();
+				saved = settings.history?.enabled;
+				if (!planVariableSet) planPct = settings.plan?.contextPct ?? planPct;
+			} catch (error) {
+				trouble = error instanceof Error ? error.message : String(error);
+			}
+			if (saved !== undefined) {
+				historyOn = saved;
+				historySource = "from the saved preference";
+			} else {
+				historyOn = historyVariable;
+				historySource = historyVariable ? "from PI_FUSION_HISTORY=1" : trouble === undefined ? "no preference is saved and PI_FUSION_HISTORY is not 1" : "PI_FUSION_HISTORY is not 1";
+			}
+			if (trouble !== undefined) settingsWarning = `${trouble}; run history is ${historyOn ? "on" : "off"} in this instance (${historySource}); plan context cap is ${planPct}%`;
+		})());
+
+	/** Says once, where a notice can be shown, that the global settings could not be read at startup. */
+	const noteSettings = (ctx: any): void => {
+		if (settingsWarning === undefined) return;
+		const warning = settingsWarning;
+		settingsWarning = undefined;
+		record(() => ctx.ui.notify(`fusion: ${warning}`, "warning"));
+	};
+
+	/** This instance's run history as a line says it: the choice it started with, and where that came from. */
+	const historyActive = (): string => `${historyOn ? "on" : "off"} in this instance (${historySource})`;
 
 	/** Says once, where a notice can be shown, that the default profile was not what this session started with. */
 	const noteProfiles = (ctx: any): void => {
@@ -1814,13 +1866,27 @@ export default function fusion(pi: ExtensionAPI, options: FusionOptions = {}) {
 	const ledger = new Ledger(budgetConfig());
 	/** The variables that are set and name nothing their control can use, captured when Pi loads this. */
 	const variableTrouble = [...budgetProblems(), ...planProblems(), ...dashboardProblems()];
-	/** The share of its window, as a percentage, past which a plan run is handed off to a fresh one. */
-	const planPct = planContextPct();
+	/** A non-blank variable overrides the saved cap, including an invalid value that keeps the default with a warning. */
+	const planVariableSet = !!process.env.PI_FUSION_PLAN_CONTEXT_PCT?.trim();
+	/** The cap settles with the startup settings read and stays fixed for this instance. */
+	let planPct = planContextPct();
 	let variablesNoted = false;
 	/** Whether an implement, ultracode or security run that changed files gets an independent review without being asked. */
 	const autoReview = process.env.PI_FUSION_AUTO_REVIEW?.trim() === "1";
-	/** Whether this Pi session keeps its runs on disk, so a later process on the same host session can show them. */
-	const historyOn = historyEnabled();
+	const settingsStore = options.settings ?? hostSettingsStore(hostAgentDir);
+	/** What PI_FUSION_HISTORY said when this instance was created: the fallback when no preference is saved. */
+	const historyVariable = historyEnabled();
+	/**
+	 * Whether this instance keeps its runs on disk, so a later process on the same host session can show them. It is
+	 * undefined until the startup read of the saved preference settles, and every history read, write and archive treats
+	 * that as off; it is set once and never again, so neither saving a preference nor an edit of the file changes it.
+	 */
+	let historyOn: boolean | undefined;
+	/** Where `historyOn` came from, as the history command and status say it. */
+	let historySource = "";
+	/** Why global settings could not be read, said once where a notice can be shown. */
+	let settingsWarning: string | undefined;
+	let choosingSettings: Promise<void> | undefined;
 	let history: History | undefined;
 	/** The runs an earlier Pi process left in this host session's file, the newest record per handle. */
 	const historical = new Map<string, HistoryRecord>();
@@ -2040,7 +2106,8 @@ export default function fusion(pi: ExtensionAPI, options: FusionOptions = {}) {
 
 	/**
 	 * Loads this host session's runs from disk once per runtime, so a later Pi process on the same session shows what
-	 * ran before it. A session Pi keeps no file for keeps no history, and nothing here is worth a failed call.
+	 * ran before it. A session Pi keeps no file for keeps no history, and nothing here is worth a failed call. Before the
+	 * startup choice has settled this loads nothing and marks nothing, so the first call after it still loads.
 	 */
 	const ensureHistory = (ctx: any): void => {
 		lastCtx = ctx;
@@ -2901,7 +2968,52 @@ export default function fusion(pi: ExtensionAPI, options: FusionOptions = {}) {
 			startup = `unknown (${error instanceof Error ? error.message : String(error)})`;
 		}
 		const where = await profileStore.where().catch(() => "unknown");
-		return [`fusion configuration: ${configurationLabel(configuration)} · new sessions start with ${startup}`, ...settingsTable(configuration.roles), `profiles file: ${where}`];
+		return [`fusion configuration: ${configurationLabel(configuration)} · new sessions start with ${startup}`, ...settingsTable(configuration.roles), `profiles file: ${where}`, ...(await historyLines())];
+	};
+
+	/** The saved history preference as a line says it, read again now, or why it could not be read. */
+	const savedHistory = async (): Promise<string> => {
+		let saved: boolean | undefined;
+		try {
+			saved = (await settingsStore.read()).history?.enabled;
+		} catch (error) {
+			return `unknown (${error instanceof Error ? error.message : String(error)})`;
+		}
+		return saved === undefined ? "unset (new instances use PI_FUSION_HISTORY=1 if set, else off)" : saved ? "on" : "off";
+	};
+
+	/** This instance's history and the saved preference, kept apart: only a new instance reads the saved one. */
+	const historyLines = async (): Promise<string[]> => {
+		const where = await settingsStore.where().catch(() => "unknown");
+		return [`run history: ${historyActive()}`, `saved history preference for new instances: ${await savedHistory()}`, `settings file: ${where}`];
+	};
+
+	/**
+	 * What /fusion history does: say this instance's history and the saved preference, or save a preference for the
+	 * instances that start after it. A save never changes this instance's history, whatever it was and whatever is saved.
+	 */
+	const historyCommand = async (command: Extract<FusionCommand, { kind: "history" | "history-set" }>, ctx: any, notice: (text: string, level: "info" | "warning" | "error") => void): Promise<void> => {
+		if (historyOn === undefined) await chooseSettings();
+		noteSettings(ctx);
+		if (command.kind === "history") {
+			notice([...(await historyLines()), "Change the saved preference with /fusion history on|off; it applies after restarting Pi, /reload or a new session."].join("\n"), "info");
+			return;
+		}
+		const wanted = command.enabled ? "on" : "off";
+		const where = await settingsStore.where().catch(() => "the settings file");
+		let before: boolean | undefined;
+		try {
+			await settingsStore.update((current) => {
+				before = current.history?.enabled;
+				return { ...current, history: { enabled: command.enabled } };
+			});
+		} catch (error) {
+			notice(`the run history preference was not saved: ${error instanceof Error ? error.message : String(error)}`, "error");
+			return;
+		}
+		const saved = before === command.enabled ? `run history preference was already saved ${wanted}` : `saved run history ${wanted} for new Fusion instances`;
+		const active = historyOn === command.enabled ? `this instance already keeps run history ${wanted}` : `this instance keeps run history ${historyOn ? "on" : "off"}; ${wanted} takes effect after restarting Pi, /reload or replacing the session`;
+		notice(`fusion: ${saved} in ${where}; ${active}`, "info");
 	};
 
 	/** The roles a configuration disables, as a notice ends with them, so a switch says what it turned off. */
@@ -3186,10 +3298,11 @@ export default function fusion(pi: ExtensionAPI, options: FusionOptions = {}) {
 			/** Every notice /fusion shows: a child's report, activity, question or changed path reaches most of them. */
 			const notice = (text: string, level: "info" | "warning" | "error") => ctx.ui.notify(plainText(text), level);
 			mask();
-			const command = parseFusion(args);
+			let command = parseFusion(args);
 			if (command.kind === "usage") {
 				notice(command.message, "warning");
-				return;
+				if (args.trim()) return;
+				command = { kind: "status" };
 			}
 			// On and off read no configuration, so they switch at once, before the default profile has loaded.
 			if (command.kind === "off") {
@@ -3208,6 +3321,11 @@ export default function fusion(pi: ExtensionAPI, options: FusionOptions = {}) {
 				else notice("fusion is on", "info");
 				return;
 			}
+			// The history preference is for instances yet to start, so saving it needs neither Fusion on nor every run finished.
+			if (command.kind === "history" || command.kind === "history-set") {
+				await historyCommand(command, ctx, notice);
+				return;
+			}
 			// Retention is independent of role settings and may change with Fusion off or runs still unfinished.
 			if (command.kind === "dashboard-limit") {
 				if (command.limit !== undefined) store.setMaxRuns(command.limit);
@@ -3218,6 +3336,8 @@ export default function fusion(pi: ExtensionAPI, options: FusionOptions = {}) {
 			// profile as a call does; once that has loaded, nothing here yields.
 			if (!initialized) await initialize();
 			noteProfiles(ctx);
+			noteSettings(ctx);
+			ensureHistory(ctx);
 			if (
 				command.kind === "config" ||
 				command.kind === "profile" ||
@@ -3262,7 +3382,7 @@ export default function fusion(pi: ExtensionAPI, options: FusionOptions = {}) {
 				if (command.handle === undefined) {
 					const all = [...runs.values()];
 					const earlier = heldRuns(ctx).map((held) => `${held.handle} · ${held.role} · ${held.model} · ${held.state} · earlier Pi process`);
-					notice([`fusion: ${enabled ? "on" : "off"}`, `profile: ${configurationLabel(configuration)}`, "", ...settingsTable(configuration.roles), "", ...(all.length ? all.map(statusLine) : ["no runs in this Pi session yet"]), ...earlier, usageLine()].join("\n"), "info");
+					notice([`fusion: ${enabled ? "on" : "off"}`, `profile: ${configurationLabel(configuration)}`, `history: ${historyActive()}`, "", ...settingsTable(configuration.roles), "", ...(all.length ? all.map(statusLine) : ["no runs in this Pi session yet"]), ...earlier, usageLine()].join("\n"), "info");
 					return;
 				}
 				const run = live(command.handle);
@@ -3450,6 +3570,7 @@ export default function fusion(pi: ExtensionAPI, options: FusionOptions = {}) {
 		mask();
 		await initialize();
 		noteProfiles(ctx);
+		noteSettings(ctx);
 	});
 
 	pi.on("agent_settled", (_event, ctx) => {
@@ -3503,6 +3624,7 @@ export default function fusion(pi: ExtensionAPI, options: FusionOptions = {}) {
 		// here yields before the run registers, which is what lets a cancel issued right after the call find it.
 		if (!initialized) await initialize();
 		noteProfiles(ctx);
+		noteSettings(ctx);
 		ensureHistory(ctx);
 		noteVariables(ctx);
 		// A run whose state has just turned terminal records its branch entry when its end path lands; a continue reads it.
@@ -3604,7 +3726,7 @@ export default function fusion(pi: ExtensionAPI, options: FusionOptions = {}) {
 		name: TOOL_NAME,
 		executionMode: "sequential" as const,
 		label: "Fusion",
-		description: `Delegate work to a child: a headless coding session in this working directory, run through one of this build's backends. The role picks the job. plan: a planner on the configured model, or the model you name, which can read the code, run commands and write scratch files, challenges a goal and your proposed plan and consolidates it into an agreed, numbered task list with acceptance criteria. A plan call continues the last plan run of the backend it routes to, so follow-ups can refer to the earlier agreement, until that run's context passes its cap or the call names another model, when the call starts a fresh plan run carrying the agreed plan and says so; fresh starts a new plan run. implement: implements one clear, bounded task with full tools and reports what changed and how it was verified. If the task needs a broader scope or a design decision, it stops and reports under Escalation instead of widening the task. ultracode: Claude Code with ultracode on orchestrates Claude Opus 5 agents at xhigh effort, one agent at a time, to implement, verify and review a task, several tasks in dependency order, or a whole agreed plan. It is slower and costlier than implement; use it only when the user asks for it. ask: read-only tools (on claude: Read, Bash, Grep, Glob, WebSearch, WebFetch) answer a question about the code with file and line references, or with mode review give an independent review of a change, findings ranked by severity. It has no edit or write tool, and its contract forbids changing files through a shell. security: investigates one scoped security concern, area or change on the user's own Pi provider configuration, with the same tools as role implement. It confirms a finding where it can, reports each with a severity and with whether it is confirmed or inferred, and never puts a secret in its report by value. Its task says whether fixes are authorized: with none it reports findings and changes no application code, and with one it writes the smallest fix that closes a finding and verifies it. Ask for it only when the user asks for a security investigation, audit or fix. ${configurationText(configuration.roles)} A disabled role is refused whether a call starts or continues it. backend picks the harness a child runs in: leave backend unset unless the user names one, and a fresh run goes to the backend the configuration above names for its role, on that role's configured model and effort. A call that names the other backend runs there on that backend's own defaults, never on the settings configured for the role's other backend. backend pi runs plan, implement, ask and security on the user's own Pi provider configuration, under the same contracts as the claude roles, security's own contract included; role ultracode runs on the claude backend alone, and role security on the pi backend alone, so a call that names it goes to pi whether or not it names a backend and naming claude for it is refused before anything starts. On pi the tools are Pi's own and are not the claude lists above: roles plan, implement and security run with read, bash, edit, write, grep, find and ls, role ask runs with read, bash, grep, find and ls and has no web search or web fetch tool at all, and every pi role also gets ask_orchestrator, which is how a pi child asks you a question. A pi call's model is a provider and a model id, such as deepseek/deepseek-chat, taken from the call's model parameter, then the selection the run it continues actually ran with, then this session's configuration for that role, which by default comes from PI_FUSION_PI_<ROLE>_MODEL; a pi call with none of those is refused before anything starts, because nothing here resolves a pi model for you. backend codex is experimental: it runs plan and implement in a workspace-write sandbox, and ask read-only, under the same contracts, through the user's own codex install, configuration and login, with no ultracode or security role; its model and effort are single tokens from the call, then the selection the run it continues actually ran with, then this session's configuration, which by default comes from PI_FUSION_CODEX_<ROLE>_MODEL and _EFFORT, and otherwise the host's own codex default. A codex child also gets ask_orchestrator, through codex's experimental API, and asks you a question as a pi child does. A message to a running codex run is sent once to its current turn, with no retry, and a turn that took it has queued it, which does not show the child read it. A codex run is continued like any other, but only from the exact turn its record names: in the Pi session that recorded it its thread is resumed, and refused if it has moved past that turn; in another one it is forked from that turn into a new thread. A codex plan handoff carries the model and effort the plan run recorded and not its provider, so the fresh thread runs on the provider the host's own codex configuration chooses. A codex run's stats line names the codex resume command that reopens its thread. Every run gets a handle such as run-3, shown in the stats line. continue with a handle sends the task as a follow-up to that run: the child keeps its context from the run's last successful call, across a resume of this session, /tree and forks, stays on the backend it ran on, and keeps the model and effort that run was started with unless the call names others, whatever profile is selected since. Calls run one at a time: Pi serializes any turn that contains one. Returns the child's report, or with background true the handle at once and the report later as a message; manage a background run with fusion_control. If the child asks a question, the call returns the question at once and the run waits in the background until you answer it with fusion_control message. Only one run that can change files is active at a time, waiting included; ask runs can go next to it. The claude tool is this same delegation forced to the claude backend, kept for compatibility, and fusion_control and claude_control both act on every run.`,
+		description: `Delegate work to a child: a headless coding session in this working directory, run through one of this build's backends. The role picks the job. plan: a planner on the configured model, or the model you name, which can read the code, run commands and write scratch files, challenges a goal and your proposed plan and consolidates it into an agreed, numbered task list with acceptance criteria. A plan call continues the last plan run of the backend it routes to, so follow-ups can refer to the earlier agreement, until that run's context passes its cap or the call names another model, when the call starts a fresh plan run carrying the agreed plan and says so; fresh starts a new plan run. implement: implements one clear, bounded task with full tools and reports what changed and how it was verified. If the task needs a broader scope or a design decision, it stops and reports under Escalation instead of widening the task. ultracode: Claude Code with ultracode on orchestrates Claude Opus 5 agents at xhigh effort, one agent at a time, to implement, verify and review a task, several tasks in dependency order, or a whole agreed plan. It is slower and costlier than implement; use it only when the user asks for it. ask: read-only tools (on claude: Read, Bash, Grep, Glob, WebSearch, WebFetch) answer a question about the code with file and line references, or with mode review give an independent review of a change, findings ranked by severity. It has no edit or write tool, and its contract forbids changing files through a shell. security: investigates one scoped security concern, area or change on the user's own Pi provider configuration, with the same tools as role implement. It confirms a finding where it can, reports each with a severity and with whether it is confirmed or inferred, and never puts a secret in its report by value. Its task says whether fixes are authorized: with none it reports findings and changes no application code, and with one it writes the smallest fix that closes a finding and verifies it. Ask for it only when the user asks for a security investigation, audit or fix. ${configurationText(configuration.roles)} A disabled role is refused whether a call starts or continues it. backend picks the harness a child runs in: leave backend unset unless the user names one, and a fresh run goes to the backend the configuration above names for its role, on that role's configured model and effort. A call that names the other backend runs there on that backend's own defaults, never on the settings configured for the role's other backend. backend pi runs plan, implement, ask and security on the user's own Pi provider configuration, under the same contracts as the claude roles, security's own contract included; role ultracode runs on the claude backend alone, and role security on the pi backend alone, so a call that names it goes to pi whether or not it names a backend and naming claude for it is refused before anything starts. On pi the tools are Pi's own and are not the claude lists above: roles plan, implement and security run with read, bash, edit, write, grep, find and ls, role ask runs with read, bash, grep, find and ls and has no web search or web fetch tool at all, and every pi role also gets ask_orchestrator, which is how a pi child asks you a question. A pi call's model is a provider and a model id, such as deepseek/deepseek-chat, taken from the call's model parameter, then the selection the run it continues actually ran with, then this session's configuration for that role, which by default comes from PI_FUSION_PI_<ROLE>_MODEL; a pi call with none of those is refused before anything starts, because nothing here resolves a pi model for you. backend codex runs plan and implement in a workspace-write sandbox, and ask read-only, under the same contracts, through the user's own codex install, configuration and login, with no ultracode or security role; its model and effort are single tokens from the call, then the selection the run it continues actually ran with, then this session's configuration, which by default comes from PI_FUSION_CODEX_<ROLE>_MODEL and _EFFORT, and otherwise the host's own codex default. A codex child also gets ask_orchestrator, through codex's experimental API, and asks you a question as a pi child does. A message to a running codex run is sent once to its current turn, with no retry, and a turn that took it has queued it, which does not show the child read it. A codex run is continued like any other, but only from the exact turn its record names: in the Pi session that recorded it its thread is resumed, and refused if it has moved past that turn; in another one it is forked from that turn into a new thread. A codex plan handoff carries the model and effort the plan run recorded and not its provider, so the fresh thread runs on the provider the host's own codex configuration chooses. A codex run's stats line names the codex resume command that reopens its thread. Every run gets a handle such as run-3, shown in the stats line. continue with a handle sends the task as a follow-up to that run: the child keeps its context from the run's last successful call, across a resume of this session, /tree and forks, stays on the backend it ran on, and keeps the model and effort that run was started with unless the call names others, whatever profile is selected since. Calls run one at a time: Pi serializes any turn that contains one. Returns the child's report, or with background true the handle at once and the report later as a message; manage a background run with fusion_control. If the child asks a question, the call returns the question at once and the run waits in the background until you answer it with fusion_control message. Only one run that can change files is active at a time, waiting included; ask runs can go next to it. The claude tool is this same delegation forced to the claude backend, kept for compatibility, and fusion_control and claude_control both act on every run.`,
 		promptSnippet:
 			"Delegate planning (plan), bounded implementation (implement), implementation the user asks ultracode for (ultracode), read-only questions and reviews (ask) or a scoped security investigation or fix the user asked for (security) to a coding child",
 		promptGuidelines: [
@@ -3626,7 +3748,7 @@ export default function fusion(pi: ExtensionAPI, options: FusionOptions = {}) {
 			backend: Type.Optional(
 				stringEnum(
 					BACKEND_NAMES,
-					"The harness the child runs in: claude, which runs every role but security, or pi, which runs plan, implement, ask and security on the user's own Pi provider configuration and needs a provider and model id from the call's model parameter or this session's configuration. codex runs plan, implement and ask through the user's own codex install, experimentally. Leave it unset to run the role on the backend this session's configuration names for it, and name one only when the user asks for it; role security goes to pi whether or not this names it, because no other harness runs it, and naming claude for it is refused. With continue it must name the backend that run is on, if it names one at all.",
+					"The harness the child runs in: claude, which runs every role but security, or pi, which runs plan, implement, ask and security on the user's own Pi provider configuration and needs a provider and model id from the call's model parameter or this session's configuration. codex runs plan, implement and ask through the user's own codex install. Leave it unset to run the role on the backend this session's configuration names for it, and name one only when the user asks for it; role security goes to pi whether or not this names it, because no other harness runs it, and naming claude for it is refused. With continue it must name the backend that run is on, if it names one at all.",
 				),
 			),
 			model: Type.Optional(
@@ -3740,6 +3862,9 @@ export default function fusion(pi: ExtensionAPI, options: FusionOptions = {}) {
 	const control = async (tool: NonNullable<CardDetails["control"]>, params: { action: string; run?: string; message?: string }, signal: AbortSignal | undefined, ctx: any) => {
 		mask();
 		ui = ctx.ui;
+		// A control waits for global settings alone: the runs it names may be ones only the history kept.
+		if (historyOn === undefined) await chooseSettings();
+		noteSettings(ctx);
 		ensureHistory(ctx);
 		noteVariables(ctx);
 		const reply = (text: string, details: Record<string, unknown> = {}) => ({ content: [{ type: "text" as const, text }], details: { ...details, ...(details.question === undefined ? {} : { control: tool }) } });

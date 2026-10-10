@@ -17,7 +17,7 @@ The host calls `fusion` with a task; optional parameters select how it runs. `cl
 | `mode` | `ask` only: `answer` (default) or `review`, choosing the corresponding contract. A continuation keeps its mode unless overridden. |
 | `model` | Override a model: Claude alias/id for `plan`, `implement`, or `ask`; `provider/model-id` for every Pi role; a Codex model id without whitespace for `plan`, `implement`, or `ask`. `ultracode` rejects it. |
 | `effort` | Claude `low`, `medium`, `high`, `xhigh`, or `max` for `plan`, `implement`, or `ask`; Pi also accepts `off` and `minimal`; Codex any single level without whitespace for `plan`, `implement`, or `ask`. `fusion` advertises it as a plain string and the routed backend's binding checks it before admission; `claude` keeps the Claude enum. A Codex level passes the binding lexically, and the model or server may still refuse it when the run starts. Optional on Pi and Codex; fixed for `ultracode`, which rejects the parameter. |
-| `backend` | `fusion` only: `claude`, `pi`, or experimental `codex`. Fresh calls use role settings unless overridden; continuations cannot change backend. Codex runs `plan`/`implement`/`ask` through the host's own install; see [behavior and qualification limits](codex-backend.md). |
+| `backend` | `fusion` only: `claude`, `pi`, or `codex`. Fresh calls use role settings unless overridden; continuations cannot change backend. Codex runs `plan`/`implement`/`ask` through the host's own install; see [behavior and qualification limits](codex-backend.md). |
 
 A role that does not accept a supplied parameter refuses it before starting a child. Disabled roles refuse new runs and continuations, including calls supplying their own model/backend. Security must be enabled separately through [settings](profiles.md); a model does not enable it.
 
@@ -25,7 +25,7 @@ All four workflow tools use sequential execution. Pi serializes tool calls in a 
 
 ## Child tools and settings
 
-Every child runs in the host's working directory. Claude and Pi append the role contract to their own system prompt; Codex receives it as the thread's developer instructions, followed by `contracts/codex-no-questions.md` in a run with no question callback, or by `contracts/codex-continued-questions.md` in a resumed or forked run with one. Tool lists differ:
+Every child runs in the host's working directory. Claude and Pi append the role contract to their own system prompt; Codex receives only that shared contract as the thread's developer instructions and requires a [question callback](questions.md#on-codex). Tool lists differ:
 
 | Role | Claude Code tools | Pi tools |
 | --- | --- | --- |
@@ -34,9 +34,9 @@ Every child runs in the host's working directory. Claude and Pi append the role 
 | `ultracode` | Claude's own tools, Workflow, Agent, and the user's MCP servers | Unsupported |
 | Enabled `security` | Unsupported | Same as Pi implement |
 
-A Codex role is bound with a sandbox instead of a tool list: `implement` in `workspace-write`, `ask` (both modes) in `read-only`, with approval policy `never`. The child's tools, MCP servers, writable roots, network setting and multi-agent features are whatever the user's Codex configuration gives that sandbox mode; Fusion isolates none of them. See [Codex backend](codex-backend.md#inheritance-not-isolation).
+A Codex role is bound with a sandbox instead of a tool list: `plan` and `implement` in `workspace-write`, `ask` (both modes) in `read-only`, with approval policy `never`. The child's tools, MCP servers, writable roots, network setting and multi-agent features are whatever the user's Codex configuration gives that sandbox mode; Fusion isolates none of them. See [Codex backend](codex-backend.md#inheritance-not-isolation).
 
-Every Claude and Pi child also gets [ask_orchestrator](questions.md); a Codex child gets it experimentally as a dynamic tool, when its thread has one ([Questions on Codex](questions.md#on-codex)). Fixed-tool Claude roles use `bypassPermissions` and strict MCP configuration with only that question server. Fusion leaves Claude's normal settings/plugin/CLAUDE.md loading in place; ultracode's permission mode is [configurable](ultracode.md). Pi instead uses in-memory settings and explicit resources; see [its lifecycle](pi-backend.md#one-calls-lifecycle).
+Every Claude and Pi child also gets [ask_orchestrator](questions.md); Codex registers it as a dynamic tool on fresh threads and trusts its restoration on continuations ([Questions on Codex](questions.md#on-codex)). Fixed-tool Claude roles use `bypassPermissions` and strict MCP configuration with only that question server. Fusion leaves Claude's normal settings/plugin/CLAUDE.md loading in place; ultracode's permission mode is [configurable](ultracode.md). Pi instead uses in-memory settings and explicit resources; see [its lifecycle](pi-backend.md#one-calls-lifecycle).
 
 Contracts restrict scope and ask's file changes, but a shell tool can still write files. These lists are not an operating-system permission boundary.
 
@@ -148,7 +148,7 @@ The warning is composed once and carried consistently through controls, user not
 
 ## The context cap
 
-`PI_FUSION_PLAN_CONTEXT_PCT` defaults to **35%**. It compares the last model call's prompt tokens with its context window. On Codex that is the latest response's input against the reported model window, an estimate used only when both are positive: never the thread's cumulative total or the call's own usage, and not an exact occupancy. A run that recorded no positive pair has no share and is never capped. An implicit plan continuation at/above the cap starts a fresh plan, carrying the previous report (up to 32 KiB) as quoted agreed-plan data, not instructions. The result names both handles. Explicitly naming a different model also hands off, on any backend.
+The plan context cap defaults to **35%**. Set `plan.contextPct` in [Fusion's settings file](configuration.md#the-fusion-settings-file); a non-blank `PI_FUSION_PLAN_CONTEXT_PCT` overrides it. It compares the last model call's prompt tokens with its context window. On Codex that is the latest response's input against the reported model window, an estimate used only when both are positive: never the thread's cumulative total or the call's own usage, and not an exact occupancy. A run that recorded no positive pair has no share and is never capped. An implicit plan continuation at/above the cap starts a fresh plan, carrying the previous report (up to 32 KiB) as quoted agreed-plan data, not instructions. The result names both handles. Explicitly naming a different model also hands off, on any backend.
 
 A cap handoff keeps the old planner's model unless overridden. Its effort differs:
 
@@ -189,11 +189,36 @@ Generated questions/cards/handoffs use the invoking tool pair (`fusion`/`fusion_
 
 ## Runs across Pi processes
 
-An earlier process's branch-recorded run is not active. Controls explain that distinction; `fusion` can continue it only when its record is usable. Reports live in memory unless `PI_FUSION_HISTORY=1` saves them for a durable host session. No history is written for `--no-session`.
+An earlier process's branch-recorded run is not active. Controls explain that distinction; `fusion` can continue it only when its record is usable. Reports live in memory unless [history is on](#turning-history-on-and-off) for this instance, which saves them for a durable host session. No history is written for `--no-session`.
 
 History writes on start, token updates, and end. On its first delegation, control or command, a later process restores earlier usage and the reports that status and review read. Branch entries remain continuation authority. For those lookups a history record must name the same child as the branch's latest entry for its handle: Claude session id, Pi id **and file**, or Codex thread id. A mismatched identity is not reported or reviewed as that run. A fork reads ancestor history but never writes to that ancestor's file. A run left active by a dead process restores as `aborted`, and the host writes that correction back to its own session's file. The dashboard lists earlier runs through a separate, read-only [archive](dashboard.md#archived-runs).
 
 Detailed earlier-run status shows its state, elapsed time, changed-file count, and first 600 report/failure characters. It offers continuation only with a usable branch record and review only for work made in this working directory. Restored usage seeds the session ledger, and handles are not reused.
+
+### Turning history on and off
+
+History is off unless turned on. Each Fusion instance decides once, when it starts, and keeps that choice for its whole life:
+
+```text
+saved preference in <agent dir>/pi-fusion/settings.json   history.enabled true/false
+  -> otherwise PI_FUSION_HISTORY, as captured when the instance was created   exactly "1" (trimmed) = on
+  -> otherwise off
+```
+
+A saved `false` turns history off even with `PI_FUSION_HISTORY=1`. The variable stays as a compatibility fallback for when nothing is saved.
+
+| Command | Effect |
+| --- | --- |
+| `/fusion history` | Show this instance's history (on/off and where that came from), the saved preference read now (`on`, `off`, `unset`, or `unknown` with the file's problem), and the settings file path |
+| `/fusion history on`, `/fusion history off` | Save the preference for **new** Fusion instances only |
+
+Saving never changes the running instance. The notice says what was saved and what this instance keeps, for example `this instance keeps run history off; on takes effect after restarting Pi, /reload or replacing the session` (`/new`, `/resume`, `/fork`). Saving a value that already matches says so and claims no restart. Neither command needs Fusion on or every run finished, and neither changes the mode, the role configuration or profiles. Editing the file, or changing `PI_FUSION_HISTORY` in the shell, does not affect a running instance either.
+
+`/fusion status` shows this instance's line, such as `history: off in this instance (from the saved preference)`. `/fusion config`, when it prints rather than opens the editor, adds the saved preference and file path. See [the Fusion settings file](configuration.md#the-fusion-settings-file) for its schema and write rules.
+
+Startup reads the settings file once, before anything reads or writes history, on every path: session start, delegation, `/fusion` commands, and control tools reached before session start. If the file cannot be read, is malformed or comes from a newer pi-fusion, it is left untouched, `PI_FUSION_HISTORY` decides, and one warning names the problem and the resulting behavior. A save into such a file is refused.
+
+Turning history on writes the [project content listed below](#history-data-and-limits) for durable host sessions only. `--no-session` writes no history whatever the preference. The preference file itself can still be saved from such a session. Turning history off stops writes in later instances. It does not delete existing history files or child transcripts, and nothing fills in runs from an instance that kept no history. Delete those files by hand if you want them gone.
 
 ### Archive eligibility
 

@@ -22,7 +22,7 @@ fusion.ts                     host lifecycle and registration
   +-- backends/types.ts       SDK-neutral boundary
   |     +-- claude.ts         Claude SDK and stream/questions
   |     +-- pi-backend.ts     Pi composition (see below)
-  |     +-- codex.ts          Codex app-server composition (experimental, registered)
+  |     +-- codex.ts          Codex app-server composition (registered)
   +-- process-tree.ts         launch and descendant cleanup
   +-- cards/dashboard        terminal and browser monitoring
   |     +-- dashboard-archive.ts  read-only history archive
@@ -35,6 +35,7 @@ fusion.ts                     host lifecycle and registration
 | `fusion.ts` | Tools/command, mode, configuration application, admission, handles, branch records, questions, controls, reviews, and host lifecycle handlers |
 | `roles.ts` | Supported backends, writer-slot and review eligibility per role |
 | `profiles.ts`, `profile-store.ts` | Captured legacy defaults, settings validation/copies, global profiles file and queued atomic replacement |
+| `settings-store.ts` | Fusion's own `settings.json`: the saved history preference and plan context cap, validation, and file/memory stores over the profile store's queue and atomic write |
 | `backends/types.ts` | Session references/intents, selection, request/outcome/event/callback shapes; imports nothing |
 | `backends/claude.ts` | Claude SDK options, input/question bridges, stream loop; SDK concerns stay here |
 | `backends/pi-binding.ts` | Pure Pi role/model/effort binding, contracts, and tool/resource lists |
@@ -58,7 +59,7 @@ fusion.ts                     host lifecycle and registration
 | `changes.ts`, `history.ts`, `budget.ts` | Git snapshots; opt-in host run history; running-total cost ledger |
 | `handoff.ts`, `review.ts` | Plan cap/model-change handoff; independent review eligibility and quoted prompt data |
 
-Role behavior belongs in `contracts/*.md`. Review **selection** belongs in `fusion.ts`: every review uses the session's configured `ask` backend/model/effort, not the reviewed role's backend or model. Architecture, storage, and runtime limitations are in [Pi backend](pi-backend.md); the experimental Codex backend is in [Codex backend](codex-backend.md).
+Role behavior belongs in `contracts/*.md`. Review **selection** belongs in `fusion.ts`: every review uses the session's configured `ask` backend/model/effort, not the reviewed role's backend or model. Backend architecture, storage, and runtime limitations are in [Pi backend](pi-backend.md) and [Codex backend](codex-backend.md).
 
 ## Test strategy
 
@@ -90,7 +91,7 @@ extension test host
 - Registry overlays spread injected entries last; explicit `undefined` removes a default without fallback. A routed Codex case needs an own double/fake, never `codex: undefined` alone.
 - The two `productionDefaults()` hosts never run a backend. They refuse with Pi/Codex selection variables or `PI_FUSION_CODEX_BIN` set; Codex needs a tripwire because an omitted model uses its host default.
 - `test/backends.test.ts` audits registrations, overlays and import boundaries, and constructs the default Codex backend without calling `run`. Every registration uses `tripwires()` or `productionDefaults()`, never both.
-- Every host injects a memory profile store: no user `profiles.json` reads/writes. Codex tests use no native binary, home, auth or `PATH` lookup.
+- Every host injects a memory profile store and a memory settings store: no user `profiles.json` or `settings.json` reads/writes. `test/backends.test.ts` audits that each registration names a settings store. `control.test.ts` and `extension.test.ts`, whose cases assert history behavior, clear `PI_FUSION_HISTORY` at load so the shell's value cannot change them; cases that need it set it themselves. Codex tests use no native binary, home, auth or `PATH` lookup.
 
 [`test/fake-codex.mjs`](../test/fake-codex.mjs) is the literal app-server layer, separate from in-memory binding doubles. `FAKE_CODEX_SCENARIO` selects behavior; `FAKE_CODEX_LOG` records each input line in a per-case temporary file. Its other variables script replies, persisted-thread history, usage, steers and questions; the fixture source owns that catalogue. None is a production request field.
 

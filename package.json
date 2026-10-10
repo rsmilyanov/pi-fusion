@@ -4,7 +4,7 @@
   "private": true,
   "license": "MIT",
   "type": "module",
-  "description": "Pi extension for delegating planning, implementation, questions and reviews to headless Claude Code, Pi or (experimental) Codex sessions.",
+  "description": "Pi extension for delegating planning, implementation, questions and reviews to headless Claude Code, Pi or Codex sessions.",
   "keywords": [
     "pi-package"
   ],

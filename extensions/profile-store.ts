@@ -26,11 +26,14 @@ export interface ProfileStore {
 	update(change: (current: ProfileDocument) => ProfileDocument): Promise<ProfileDocument>;
 }
 
-/** The writes queued per file, shared by every store of this module in this process so two instances never interleave. */
+/**
+ * The writes queued per file, shared by every store of this module in this process so two instances never interleave.
+ * The Fusion settings store queues its own file here too, keyed by its own path.
+ */
 const queues = new Map<string, Promise<void>>();
 
 /** Runs the operation after every one queued for the same key, whether those succeeded or not. */
-function queued<T>(key: string, operation: () => Promise<T>): Promise<T> {
+export function queued<T>(key: string, operation: () => Promise<T>): Promise<T> {
 	const before = queues.get(key) ?? Promise.resolve();
 	const result = before.then(operation, operation);
 	const tail = result.then(
@@ -45,10 +48,30 @@ function queued<T>(key: string, operation: () => Promise<T>): Promise<T> {
 	return result;
 }
 
-const reason = (error: unknown): string => {
+export const reason = (error: unknown): string => {
 	const code = (error as { code?: unknown } | null)?.code;
 	return typeof code === "string" ? code : error instanceof Error ? error.message : String(error);
 };
+
+/**
+ * Writes the text to the file in a private directory through a private temporary sibling and a rename, so a reader
+ * never sees half of it and a write that fails leaves the file as it was. `what` names the file in the error.
+ */
+export async function writePrivate(target: string, text: string, what: string): Promise<void> {
+	try {
+		ownedDir(path.dirname(target));
+	} catch (error) {
+		throw new Error(`${what} ${target} could not be written: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	const temporary = `${target}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+	try {
+		await fs.promises.writeFile(temporary, text, { flag: "wx", mode: 0o600 });
+		await fs.promises.rename(temporary, target);
+	} catch (error) {
+		await fs.promises.unlink(temporary).catch(() => {});
+		throw new Error(`${what} ${target} could not be written (${reason(error)}); it is unchanged`);
+	}
+}
 
 /** The document a file's text holds, or an error naming the file and what is wrong with it. */
 function parsed(text: string, where: string): ProfileDocument {
@@ -89,20 +112,7 @@ export function fileProfileStore(fusionDir: () => string | Promise<string>): Pro
 			return queued(target, async () => {
 				// A file this cannot read is never replaced as a side effect of a command: the person fixes it first.
 				const next = change(await readFile(target));
-				const text = serializeDocument(next);
-				try {
-					ownedDir(path.dirname(target));
-				} catch (error) {
-					throw new Error(`profiles file ${target} could not be written: ${error instanceof Error ? error.message : String(error)}`);
-				}
-				const temporary = `${target}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
-				try {
-					await fs.promises.writeFile(temporary, text, { flag: "wx", mode: 0o600 });
-					await fs.promises.rename(temporary, target);
-				} catch (error) {
-					await fs.promises.unlink(temporary).catch(() => {});
-					throw new Error(`profiles file ${target} could not be written (${reason(error)}); it is unchanged`);
-				}
+				await writePrivate(target, serializeDocument(next), "profiles file");
 				return next;
 			});
 		},

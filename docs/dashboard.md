@@ -34,7 +34,7 @@ A run with no real event for 60 seconds gets an amber edge/timer. Thinking delta
 
 ## Archived runs
 
-With `PI_FUSION_HISTORY=1` and a durable host session (not `--no-session`), the list also shows runs from the [run history](runs.md#runs-across-pi-processes), labelled as archived. It reads this host session's history file and the files of ancestor sessions the current branch names, and only the runs that branch can vouch for (see [archive eligibility](runs.md#archive-eligibility)). It never reads abandoned branches or unrelated session files. Each invocation keeps its own row by its history id, so continuing one handle three times shows three rows.
+With [history on](runs.md#turning-history-on-and-off) in this instance (a saved preference, else `PI_FUSION_HISTORY=1`, read at instance start) and a durable host session (not `--no-session`), the list also shows runs from the [run history](runs.md#runs-across-pi-processes), labelled as archived. It reads this host session's history file and the files of ancestor sessions the current branch names, and only the runs that branch can vouch for (see [archive eligibility](runs.md#archive-eligibility)). It never reads abandoned branches or unrelated session files. Each invocation keeps its own row by its history id, so continuing one handle three times shows three rows.
 
 After a restart or `/resume`, the first list is history only. No child is running again and no question can be answered. A run left running or waiting by a process that is gone reads `aborted`, marked interrupted, and its end time shows as not recorded. A run this process starts shows live first and joins the archive once the store lets it go.
 
@@ -107,4 +107,4 @@ Truncated text is labelled. Pi's progress mapper can impose smaller previews bef
 
 The page contains prompts, contracts, reports/failures, tool arguments/results, Agent prompts, task summaries, thinking previews, and file paths. A startup failure can include a bounded child-stderr excerpt. Environment, argv, and raw SDK frames are not exposed, but output itself can still contain sensitive project data.
 
-The server binds loopback, and its random URL capability token stands in for authentication. **Do not share the URL.** Loopback/capability checks and safe DOM rendering are not a sandbox or secret-redaction guarantee. Host run history is a separate opt-in disk record; closing the dashboard does not erase those files or child transcripts.
+The server binds loopback, and its random URL capability token stands in for authentication. **Do not share the URL.** Loopback/capability checks and safe DOM rendering are not a sandbox or secret-redaction guarantee. Host run history is a separate opt-in disk record; closing the dashboard or turning history off does not erase those files or child transcripts.

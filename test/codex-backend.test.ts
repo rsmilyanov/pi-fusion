@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 import { CODEX_CONTRACT_FILES, type CodexCall, codexRole } from "../extensions/backends/codex-binding.ts";
 import { CODEX_APP_SERVER_ARGS, type CodexLaunch, type CodexLaunchRequest } from "../extensions/backends/codex-launch.ts";
-import { CODEX_CLIENT_VERSION_UNKNOWN, CODEX_SESSION_INVALID, CONTRACT_UNREADABLE, type CodexBackendDeps, type CodexCallReport, codexClientInfo, createCodexBackend } from "../extensions/backends/codex.ts";
+import { CODEX_CLIENT_VERSION_UNKNOWN, CODEX_QUESTION_REQUIRED, CODEX_SESSION_INVALID, CONTRACT_UNREADABLE, type CodexBackendDeps, type CodexCallReport, codexClientInfo, createCodexBackend } from "../extensions/backends/codex.ts";
 import {
 	CLEANUP_ATTENTION,
 	CLEANUP_UNCERTAIN,
@@ -41,7 +41,6 @@ import {
 	type CodexExit,
 	CODEX_QUESTION_TOOL_SPEC,
 	CODEX_QUESTION_UNANSWERED,
-	CODEX_QUESTION_UNAVAILABLE,
 	CodexTransportError,
 	startCodexChild,
 } from "../extensions/backends/codex-transport.ts";
@@ -64,13 +63,11 @@ const TEST_BOUNDS: Partial<CodexBounds> = { initializeMs: 10_000, requestMs: 10_
 const TEST_CLEANUP: OwnedCleanup = { exitGraceMs: 800, stopGraceMs: 1_000, leftoverGraceMs: 200, pipeGraceMs: 500, tableTimeoutMs: 3_000 };
 const CASE_DEADLINE_MS = 20_000;
 
-/** The contracts as a test reads them: the name, so the instructions a thread gets are visibly the two composed. */
+/** A thread gets the shared role contract alone, on fresh calls and continuations alike. */
 const readContract = (name: string): string => `contract ${name}\n`;
-const INSTRUCTIONS = (role: "implement" | "ask") => `contract ${role === "ask" ? "ask-answer.md" : "implement.md"}\n\ncontract codex-no-questions.md\n`;
-/** A run with a question callback runs its contract alone: the addendum is for a child that cannot ask. */
-const ASKING_INSTRUCTIONS = (role: "implement" | "ask") => `contract ${role === "ask" ? "ask-answer.md" : "implement.md"}\n`;
-/** A continuation that can ask also gets the fallback for a thread that was started without the question tool. */
-const CONTINUED_ASKING_INSTRUCTIONS = (role: "implement" | "ask") => `contract ${role === "ask" ? "ask-answer.md" : "implement.md"}\n\ncontract codex-continued-questions.md\n`;
+const INSTRUCTIONS = (role: "implement" | "ask") => `contract ${role === "ask" ? "ask-answer.md" : "implement.md"}\n`;
+/** Every fixture call has a callback, as the host does; an unscripted question must not get an invented answer. */
+const unexpectedQuestion = async (): Promise<string> => { throw new Error("unexpected question in a case without a scripted answer"); };
 
 const RETAINED: string[] = [];
 after(() => assert.deepEqual(RETAINED, [], "every case proved its fake was over before its root was removed"));
@@ -165,7 +162,7 @@ interface CaseOptions {
 	recorded?: ResolvedSelection;
 	/** Steers pushed into the run's control before the run is started. */
 	steers?: string[];
-	/** The run's question callback, handed to the backend as the host hands it. None when unset. */
+	/** Overrides the fixture's fail-on-unexpected-question callback, always handed to the backend as the host does. */
 	onQuestion?: (question: string, signal: AbortSignal) => Promise<string>;
 }
 
@@ -252,7 +249,7 @@ async function withBackend(scenario: string, body: (fixture: Fixture) => Promise
 					session: backend.session(options.intent ?? { kind: "new" }),
 					signal: options.signal,
 					input,
-					...(options.onQuestion === undefined ? {} : { onQuestion: options.onQuestion }),
+					onQuestion: options.onQuestion ?? unexpectedQuestion,
 					onProgress: () => (progress += 1),
 					onEvent: (event) => {
 						events.push(event);
@@ -332,9 +329,9 @@ test("a host-default implement run: one thread, one turn, the readback barrier, 
 		assert.equal(outcome.report.stage, "done");
 
 		assert.deepEqual(methods(fixture), ["initialize", "initialized", "thread/start", "turn/start", "thread/read"]);
-		assert.deepEqual(sent(fixture, "initialize")[0].params, { clientInfo: { name: "pi-fusion", version: PACKAGE_VERSION, title: "Pi-Fusion" } });
+		assert.deepEqual(sent(fixture, "initialize")[0].params, { clientInfo: { name: "pi-fusion", version: PACKAGE_VERSION, title: "Pi-Fusion" }, capabilities: { experimentalApi: true } });
 		assert.notEqual(PACKAGE_VERSION, "0");
-		assert.deepEqual(sent(fixture, "thread/start")[0].params, { sandbox: "workspace-write", approvalPolicy: "never", developerInstructions: INSTRUCTIONS("implement") });
+		assert.deepEqual(sent(fixture, "thread/start")[0].params, { sandbox: "workspace-write", approvalPolicy: "never", developerInstructions: INSTRUCTIONS("implement"), dynamicTools: [{ ...CODEX_QUESTION_TOOL_SPEC }] });
 		assert.deepEqual(sent(fixture, "turn/start")[0].params, { threadId: "thr-1", input: [{ type: "text", text: "do the task" }] });
 		assert.deepEqual(fixture.launches.map((launch) => launch.cwd), [fixture.work]);
 		assert.equal(fixture.launches[0].env?.CODEX_HOME, fixture.home, "the launch takes the environment it is given, unchanged");
@@ -347,7 +344,7 @@ test("an explicit model and effort: the model on thread/start, the effort on tur
 		ended(outcome, "stop");
 		assert.equal(outcome.run.text, "fake answer");
 		assert.deepEqual(outcome.run.selection, { model: "gpt-5", provider: "openai", effort: "high" });
-		assert.deepEqual(sent(fixture, "thread/start")[0].params, { model: "gpt-5", sandbox: "read-only", approvalPolicy: "never", developerInstructions: INSTRUCTIONS("ask") });
+		assert.deepEqual(sent(fixture, "thread/start")[0].params, { model: "gpt-5", sandbox: "read-only", approvalPolicy: "never", developerInstructions: INSTRUCTIONS("ask"), dynamicTools: [{ ...CODEX_QUESTION_TOOL_SPEC }] });
 		assert.deepEqual(sent(fixture, "turn/start")[0].params, { threadId: "thr-1", input: [{ type: "text", text: "do the task" }], effort: "high" });
 	});
 });
@@ -946,49 +943,72 @@ test("a fresh run with a callback opts in, registers the one tool, runs its cont
 		assert.deepEqual(asked.map((entry) => entry.question), ["Which name should the helper take?"]);
 		assert.equal(asked[0]!.signal.aborted, false);
 		assert.deepEqual(sent(fixture, "initialize")[0].params.capabilities, { experimentalApi: true });
-		assert.deepEqual(sent(fixture, "thread/start")[0].params, { sandbox: "workspace-write", approvalPolicy: "never", developerInstructions: ASKING_INSTRUCTIONS("implement"), dynamicTools: [{ ...CODEX_QUESTION_TOOL_SPEC }] });
+		assert.deepEqual(sent(fixture, "thread/start")[0].params, { sandbox: "workspace-write", approvalPolicy: "never", developerInstructions: INSTRUCTIONS("implement"), dynamicTools: [{ ...CODEX_QUESTION_TOOL_SPEC }] });
 		assert.deepEqual(replies(fixture), [toolResult(21, true, "call it fooHelper")]);
 		assert.deepEqual(methods(fixture), ["initialize", "initialized", "thread/start", "turn/start", "reply", "thread/read"], "the answer is a reply on the wire, then the turn's own end and the readback");
 		assert.deepEqual([outcome.run.tokensIn, outcome.run.tokensOut], [700, 40]);
 	});
 });
 
-test("a resume with no callback keeps the addendum and no capability; the restored tool's question is refused and the model's report completes the run", async () => {
-	await withBackend("question-inherited", async (fixture) => {
-		const outcome = await fixture.call({ role: "implement" }, { intent: resume(), recorded: RECORDED });
-		ended(outcome, "stop");
-		assert.equal(outcome.run.text, "no answer came, so the missing decision is reported");
-		assert.equal("capabilities" in sent(fixture, "initialize")[0].params, false);
-		assert.deepEqual(sent(fixture, "thread/resume")[0].params, { threadId: "thr-old", model: "gpt-5", modelProvider: "openai", sandbox: "workspace-write", approvalPolicy: "never", developerInstructions: INSTRUCTIONS("implement"), excludeTurns: true });
-		assert.deepEqual(replies(fixture), [toolResult(21, false, CODEX_QUESTION_UNAVAILABLE)]);
-		// The baseline accounting is the continuation's as ever: the call's share, and a new baseline at its own turn.
-		assert.deepEqual(outcome.run.session, { backend: "codex", sessionId: "thr-old", checkpoint: "turn-1", baseline: { ...plus(SEED, LAST), cacheWriteInputTokens: 0 } });
-		assert.deepEqual([outcome.run.tokensIn, outcome.run.tokensOut, outcome.run.cacheRead], [400, 20, 300]);
+for (const kind of ["new", "resume", "fork"] as const) {
+	test(`a ${kind} call without a callable question bridge refuses before any contract, lookup, version read or start`, async () => {
+		let touched = 0;
+		const touch = () => { touched += 1; throw new Error("reached"); };
+		const reports: CodexCallReport[] = [];
+		const backend = createCodexBackend({ readContract: touch, launch: touch, start: touch, clientInfo: touch, onCall: (report) => reports.push(report) });
+		const intent: SessionIntent = kind === "new" ? { kind } : kind === "resume" ? resume() : fork();
+		for (const callback of [undefined, null, false, "not a callback", {}]) {
+			const input = backend.control();
+			assert.equal(input.push("queued"), true);
+			await assert.rejects(backend.run({ role: codexRole({ role: "implement" }, undefined, {}), prompt: "x", cwd: repoRoot, session: backend.session(intent), input, signal: undefined, onQuestion: callback as never, onProgress: () => {} }), { message: CODEX_QUESTION_REQUIRED });
+			assert.equal(input.open, false, "a refused call closes its input without launching a child");
+			assert.equal(input.push("late"), false);
+			assert.deepEqual(reports.at(-1), { stage: "admission", launchCalled: false, startCalled: false, startResolved: false, shutdowns: 0 });
+		}
+		assert.equal(touched, 0);
 	});
+}
+
+test("an already cancelled callback-less call remains cancellation and touches no startup dependency", async () => {
+	let touched = 0;
+	const touch = () => { touched += 1; throw new Error("reached"); };
+	const backend = createCodexBackend({ readContract: touch, launch: touch, start: touch, clientInfo: touch });
+	const controller = new AbortController();
+	controller.abort();
+	const input = backend.control();
+	const run = await backend.run({ role: codexRole({ role: "implement" }, undefined, {}), prompt: "x", cwd: repoRoot, signal: controller.signal, input, onProgress: () => {} });
+	assert.equal(run.aborted, true);
+	assert.equal(run.errorMessage, RUN_CANCELLED);
+	assert.equal(run.session, undefined);
+	assert.equal(input.open, false);
+	assert.equal(touched, 0);
 });
 
-test("a fork with a callback registers nothing on its thread, runs its contract with the continued-questions fallback, and has the restored tool's question answered", async () => {
+test("a fork registers nothing on its thread, runs only its shared contract, and has the restored tool's question answered", async () => {
 	await withBackend("question-inherited", async (fixture) => {
 		const outcome = await fixture.call({ role: "ask" }, { intent: fork(), recorded: RECORDED, onQuestion: async () => "forked answer" });
 		ended(outcome, "stop");
 		assert.equal(outcome.run.text, "answer received: forked answer");
 		assert.deepEqual(sent(fixture, "initialize")[0].params.capabilities, { experimentalApi: true });
-		assert.deepEqual(sent(fixture, "thread/fork")[0].params, { threadId: "thr-old", lastTurnId: "turn-seed-2", model: "gpt-5", modelProvider: "openai", sandbox: "read-only", approvalPolicy: "never", developerInstructions: CONTINUED_ASKING_INSTRUCTIONS("ask"), excludeTurns: true });
+		assert.deepEqual(sent(fixture, "thread/fork")[0].params, { threadId: "thr-old", lastTurnId: "turn-seed-2", model: "gpt-5", modelProvider: "openai", sandbox: "read-only", approvalPolicy: "never", developerInstructions: INSTRUCTIONS("ask"), excludeTurns: true });
 		assert.deepEqual(replies(fixture), [toolResult(21, true, "forked answer")]);
 		assert.deepEqual([outcome.run.tokensIn, outcome.run.tokensOut, outcome.run.cacheRead], [400, 20, 300]);
 	});
 });
 
-test("a resume with a callback gets the continued-questions fallback after its contract, and the real fallback names each role's own section", async () => {
+test("a resume reads only its shared contract, registers nothing, and answers through the restored tool with baseline accounting unchanged", async () => {
 	await withBackend("question-inherited", async (fixture) => {
-		const outcome = await fixture.call({ role: "implement" }, { intent: resume(), recorded: RECORDED, onQuestion: async () => "resumed answer" });
+		const reads: string[] = [];
+		const outcome = await fixture.call({ role: "implement" }, { intent: resume(), recorded: RECORDED, onQuestion: async () => "resumed answer", deps: { readContract: (name) => { reads.push(name); return readContract(name); } } });
 		ended(outcome, "stop");
-		assert.equal(sent(fixture, "thread/resume")[0].params.developerInstructions, CONTINUED_ASKING_INSTRUCTIONS("implement"));
-		assert.equal("dynamicTools" in sent(fixture, "thread/resume")[0].params, false);
+		assert.deepEqual(reads, ["implement.md"]);
+		assert.equal(outcome.run.text, "answer received: resumed answer");
+		assert.deepEqual(sent(fixture, "initialize")[0].params.capabilities, { experimentalApi: true });
+		assert.deepEqual(sent(fixture, "thread/resume")[0].params, { threadId: "thr-old", model: "gpt-5", modelProvider: "openai", sandbox: "workspace-write", approvalPolicy: "never", developerInstructions: INSTRUCTIONS("implement"), excludeTurns: true });
+		assert.deepEqual(replies(fixture), [toolResult(21, true, "resumed answer")]);
+		assert.deepEqual(outcome.run.session, { backend: "codex", sessionId: "thr-old", checkpoint: "turn-1", baseline: { ...plus(SEED, LAST), cacheWriteInputTokens: 0 } });
+		assert.deepEqual([outcome.run.tokensIn, outcome.run.tokensOut, outcome.run.cacheRead], [400, 20, 300]);
 	});
-	const shipped = fs.readFileSync(path.join(repoRoot, "contracts", "codex-continued-questions.md"), "utf8");
-	assert.match(shipped, /If ask_orchestrator is not among your tools, do not ask in your output and do not go on as if a question had been answered/);
-	assert.match(shipped, /under Escalation for an implement report, under Open questions for a plan or an ask answer, and under Notes for an ask review/);
 });
 
 test("a run cancelled while its question waits aborts the question's signal, answers it once, and stops its child once", async () => {
@@ -1051,7 +1071,7 @@ test("an unreadable contract is refused before any lookup, and a launch failure 
 		throw new Error("reached");
 	};
 	const unreadable = createCodexBackend({ readContract: () => { throw new Error("gone"); }, start });
-	const request = { role: codexRole({ role: "implement" }, undefined, {}), prompt: "x", cwd: repoRoot, signal: undefined, onProgress: () => {} };
+	const request = { role: codexRole({ role: "implement" }, undefined, {}), prompt: "x", cwd: repoRoot, signal: undefined, onQuestion: unexpectedQuestion, onProgress: () => {} };
 	await assert.rejects(unreadable.run(request), (error: Error) => error.message === CONTRACT_UNREADABLE && (error.cause as Error).message === "gone");
 	// The real launch, reached lazily, over an environment whose PATH names one empty directory: no codex is found there.
 	const empty = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fusion-codex-empty-"));

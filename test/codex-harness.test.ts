@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { type CodexCall, codexRole } from "../extensions/backends/codex-binding.ts";
 import { CODEX_APP_SERVER_ARGS } from "../extensions/backends/codex-launch.ts";
 import { CODEX_CONTRACTS_DIR, createCodexBackend } from "../extensions/backends/codex.ts";
-import { CODEX_QUESTION_DESCRIPTION } from "../extensions/backends/codex-transport.ts";
+import { CODEX_QUESTION_DESCRIPTION, CODEX_QUESTION_TOOL_SPEC } from "../extensions/backends/codex-transport.ts";
 import {
 	additivity,
 	CASES,
@@ -451,7 +451,7 @@ test("a child that is not proved over keeps the fixtures whichever case branch r
 	}
 });
 
-test("the body the model-free cases send is the body createCodexBackend sends, contracts included, over the fenced fake", async () => {
+test("model-free thread fields and shared contracts match createCodexBackend; its required callback also registers the question tool", async () => {
 	const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "pi-fusion-harness-parity-"));
 	const work = path.join(root, "work");
 	const home = path.join(root, "codex-home");
@@ -473,13 +473,13 @@ test("the body the model-free cases send is the body createCodexBackend sends, c
 				bounds: { initializeMs: 10_000, requestMs: 10_000, shutdownStepMs: 1_500 },
 			});
 			const role = codexRole(call, undefined, {});
-			const run = await backend.run({ role, prompt: "do the task", cwd: work, session: backend.session({ kind: "new" }), signal: undefined, input: backend.control(), onProgress: () => {} });
+			const run = await backend.run({ role, prompt: "do the task", cwd: work, session: backend.session({ kind: "new" }), signal: undefined, input: backend.control(), onQuestion: async () => { throw new Error("this fixture should not ask a question"); }, onProgress: () => {} });
 			assert.equal(run.stopReason, "stop", run.errorMessage);
 			const sent = fs.readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((entry) => entry.in?.method).map((entry) => entry.in);
 			const thread = sent.find((message) => message.method === "thread/start");
 			const turn = sent.find((message) => message.method === "turn/start");
 			const harnessBody = threadParams(role, composeInstructions(role, (name) => fs.readFileSync(path.join(CODEX_CONTRACTS_DIR, name), "utf8")));
-			assert.deepEqual(thread.params, harnessBody, `${JSON.stringify(call)}: the harness's thread/start body is the backend's, byte for byte`);
+			assert.deepEqual(thread.params, { ...harnessBody, dynamicTools: [{ ...CODEX_QUESTION_TOOL_SPEC }] }, `${JSON.stringify(call)}: shared thread fields match, with question registration added by the transport`);
 			assert.ok(!("cwd" in thread.params) && !("config" in thread.params));
 			assert.deepEqual(Object.keys(turn.params).sort(), call.effort === undefined ? ["input", "threadId"] : ["effort", "input", "threadId"], "turn/start names only the thread, the input and a named effort");
 			assert.equal(turn.params.effort, call.effort);

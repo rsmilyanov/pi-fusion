@@ -1,6 +1,6 @@
 # The Pi backend
 
-The `pi` backend runs a headless Pi child in the host's working directory. It is registered beside `claude` and the experimental [`codex`](codex-backend.md); a [profile](profiles.md) or a call's `backend` selects it. There is no backend-disable variable, automatic fallback to Claude, or provider client implemented by Fusion.
+The `pi` backend runs a headless Pi child in the host's working directory. It is registered beside `claude` and [`codex`](codex-backend.md); a [profile](profiles.md) or a call's `backend` selects it. There is no backend-disable variable, automatic fallback to Claude, or provider client implemented by Fusion.
 
 Pi supports `plan`, `implement`, `ask`, and `security`. `ultracode` is Claude-only. Security is **disabled in `builtin`**: enable it through settings or a profile before calling or continuing it. A model parameter or environment variable does not enable a disabled role.
 
@@ -112,6 +112,7 @@ The root is the host's agent directory (`PI_CODING_AGENT_DIR`, normally `~/.pi/a
   bin/                          existing host helpers; reused through child PATH
   pi-fusion/
     profiles.json               named role settings, separate from child storage
+    settings.json               Fusion's own saved preferences (history), not Pi's settings.json
     history/                    optional host run history
     children/                   stable child agent directory
       bin/                      helpers Pi downloads for children

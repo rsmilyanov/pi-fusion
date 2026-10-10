@@ -6,15 +6,17 @@ User commands act on the same runs as either control tool. Run-changing `steer`,
 
 | Command | Effect |
 | --- | --- |
+| `/fusion` | Show the usage warning, then the same status as `/fusion status`; does not change mode or start a child |
 | `/fusion on`, `/fusion off` | Switch delegation mode; neither starts or cancels a child |
-| `/fusion status [run-N]` | Show mode, current profile/role defaults, runs, earlier-process runs, and session usage; with a handle, show only that run's activity, tool count, changed files, and accepted transcript/resume hint |
+| `/fusion status [run-N]` | Show mode, current profile, this instance's history, role defaults, runs, earlier-process runs, and session usage; with a handle, show only that run's activity, tool count, changed files, and accepted transcript/resume hint |
 | `/fusion cancel run-N` | Stop the run and mark it cancelled by the user; the host still gets its end notice |
 | `/fusion steer run-N <text>` | Queue text for a running child; a waiting child needs an answer instead |
 | `/fusion wait run-N` | Show activity/elapsed time until the run ends or asks a question; Esc leaves it going and never takes the report away from the host |
 | `/fusion answer [run-N] [text]` | Answer a waiting question; no text opens an editor; no handle selects the sole waiting run |
 | `/fusion review run-N` | Start an independent background review of eligible ended work |
-| `/fusion config` | Show/edit the session's role settings |
+| `/fusion config` | Show/edit the session's role settings; printed output also shows the profiles file, this instance's history, the saved history preference and the settings file |
 | `/fusion profile [list \| use <name> \| save <name> \| default <name>]` | Choose/manage global named profiles |
+| `/fusion history [on \| off]` | Show this instance's history, the saved preference and the settings file; `on`/`off` save the preference for new instances only. Works with Fusion off and runs unfinished. See [Turning history on and off](runs.md#turning-history-on-and-off) |
 | `/fusion dashboard`, `/fusion dashboard stop` | Open/reuse or close the read-only monitoring page |
 | `/fusion dashboard limit [N]` | Inspect or set this instance's in-memory run-retention target; defaults to 30, never evicts active work. See [Dashboard](dashboard.md#rendering-and-retained-data) |
 
@@ -30,7 +32,7 @@ run-N cancelled; cleaning up needs attention: leftovers; this call's storage is 
 
 The same warning appears once in the failure/report/history/dashboard. It carries no path or foreign error text. Cancellation does not undo files, and cleanup can need [manual attention](runs.md#aborting-a-run).
 
-Completion offers forms and relevant handles: all runs for status, active ones for cancel/wait, running ones that take a steer for steer, waiting ones for answer, and reviewable ones for review. Profile completion uses the last-read saved names, with `builtin` for use/default.
+Completion offers forms and relevant handles: all runs for status, active ones for cancel/wait, running ones that take a steer for steer, waiting ones for answer, and reviewable ones for review. Profile completion uses the last-read saved names, with `builtin` for use/default. `history` completes to `history on` and `history off`.
 
 ### Turning Fusion on and off
 
@@ -65,7 +67,7 @@ The flag is cleared before notification. Background children may still be active
 
 Off refuses **unfinished** runs: running, waiting, or ended but still recording/delivering, reviews included. It names them, marking final ones as finishing. Wait or cancel, then retry. The refusal cancels nothing and hides no control tools; a refused deactivation tells the host to wait for your next instruction rather than do the child's work itself.
 
-The mode exists only in this instance's memory. Status/dashboard/settings commands work while off and do not activate it. Profiles and mode are independent; neither mode tool enables a role. In particular, turning Fusion on does not enable security in `builtin`. Existing records remain and can be continued after activation when their role/record permits it.
+The mode exists only in this instance's memory. Status/dashboard/settings/history commands work while off and do not activate it. Profiles, the history preference and mode are independent; neither mode tool enables a role. In particular, turning Fusion on does not enable security in `builtin`. Existing records remain and can be continued after activation when their role/record permits it.
 
 #### Active tools and allow lists
 

@@ -10,6 +10,7 @@ import type { PiRole } from "../extensions/backends/pi-binding.ts";
 import type { BackendName, HostBackend } from "../extensions/backends/types.ts";
 import fusion, { builtinConfiguration, type Configuration, claudeRoute, fusionCall, fusionRoute, roleFor, type RunRecords, runRecords } from "../extensions/fusion.ts";
 import { fileProfileStore, memoryProfileStore, PROFILES_FILE, type ProfileStore } from "../extensions/profile-store.ts";
+import { memorySettingsStore } from "../extensions/settings-store.ts";
 import {
 	BUILTIN,
 	builtinSettings,
@@ -505,7 +506,7 @@ function sdkHost(options: SdkHostOptions = {}) {
 		sendMessage: () => {},
 		registerMessageRenderer: () => {},
 	} as unknown as ExtensionAPI;
-	fusion(api, { backends: { ...tripwires(), ...options.backends }, profiles: options.profiles ?? memoryProfileStore() });
+	fusion(api, { backends: { ...tripwires(), ...options.backends }, profiles: options.profiles ?? memoryProfileStore(), settings: memorySettingsStore() });
 	const answer = (options: string[]) => {
 		const next = dialogs.shift();
 		return typeof next === "function" ? next(options) : next;
@@ -600,7 +601,8 @@ test("the default profile loads as the session starts, and the host's guidance a
 	assert.match(host.tools.get("claude")!.description, /ultracode is disabled/);
 	assert.deepEqual(host.active, ["read", "bash", "fusion_activate"], "and fusion starts off, with only its way in offered");
 	await host.command("status");
-	assert.deepEqual(host.last()?.split("\n").slice(0, 9), ["fusion: off", "profile: work", "", ...settingsTable(WORK)]);
+	// The history line is the instance's own, whatever profile it runs, and is checked where history is the subject.
+	assert.deepEqual(host.last()?.split("\n").slice(0, 10).filter((line) => !line.startsWith("history: ")), ["fusion: off", "profile: work", "", ...settingsTable(WORK)]);
 	await host.on();
 	assert.equal((await host.fusion({ role: "implement", task: "x" })).error, undefined);
 	assert.deepEqual([claude.starts[0]!.role.model, claude.starts[0]!.role.effort], ["sonnet", "low"]);
@@ -661,15 +663,15 @@ test("mixed-profile guidance recommends each role's configured backend", async (
 	}
 });
 
-test("roles configured on codex are described as runs that can ask experimentally, take one unconfirmed steer per message and continue from their exact turn, in each tool's own name", async () => {
+test("roles configured on codex are described as runs that can ask, take one unconfirmed steer per message and continue from their exact turn, in each tool's own name", async () => {
 	const codexRoles = settings({ plan: { enabled: true, backend: "codex" }, implement: { enabled: true, backend: "codex" }, ask: { enabled: true, backend: "codex", model: "gpt-5-codex", effort: "high" } });
 	const host = sdkHost({ profiles: memoryProfileStore(document({ work: codexRoles }, "work")) });
 	await host.start();
 	const fusionGuidance = host.tools.get("fusion")!.promptGuidelines!;
 	const codexLine = fusionGuidance.find((guideline) => guideline.startsWith("Role plan, role implement and role ask run on codex in this session."));
 	assert.ok(codexLine, "the fusion guidance does not say what a codex run is");
-	assert.match(codexLine, /A codex child can ask you a question, experimentally, and waits for your answer as any child does\./);
-	assert.doesNotMatch(codexLine, /cannot ask/, "a codex child is no longer described as one that cannot ask");
+	assert.match(codexLine, /A codex child can ask you a question and waits for your answer as any child does\./);
+	assert.doesNotMatch(codexLine, /cannot ask|experimental/i, "questions are available without an experimental status label");
 	assert.match(codexLine, /one steer to its current turn, sent once and never retried: a steer the turn took is queued input, not proof the child read it/);
 	assert.match(codexLine, /Continue a codex run with fusion and continue, as any run: it goes on only from the exact turn its record names/);
 	assert.doesNotMatch(codexLine, /takes no message|not with continue|cannot be continued/, "a codex run is no longer described as fresh-only or unsteerable");
@@ -681,7 +683,8 @@ test("roles configured on codex are described as runs that can ask experimentall
 	assert.ok(claudeGuidance.some((guideline) => guideline.startsWith("Call fusion with role plan")));
 	const description = host.tools.get("fusion")!.description;
 	assert.match(description, /plan runs on codex with the host's default codex model; implement runs on codex with the host's default codex model; .*ask runs on codex with model gpt-5-codex at effort high/);
-	assert.match(description, /backend codex is experimental: it runs plan and implement in a workspace-write sandbox, and ask read-only, under the same contracts/);
+	assert.match(description, /backend codex runs plan and implement in a workspace-write sandbox, and ask read-only, under the same contracts/);
+	assert.doesNotMatch(description, /backend codex is experimental|experimentally/i);
 	assert.match(description, /with no ultracode or security role;/);
 	assert.match(description, /A codex child also gets ask_orchestrator, through codex's experimental API, and asks you a question as a pi child does\./);
 	assert.doesNotMatch(description, /codex child gets no ask_orchestrator/);
@@ -691,7 +694,8 @@ test("roles configured on codex are described as runs that can ask experimentall
 	assert.doesNotMatch(description, /cannot be continued|takes no message while it runs|as fresh runs|no plan, ultracode or security role|no fresh parameter/, "nothing still calls codex fresh-only or unsteerable");
 	assert.doesNotMatch(description, /registers no codex backend|refused as unavailable/, "codex is registered in this build");
 	const parameters = host.tools.get("fusion")!.parameters as { properties: Record<string, { description: string }> };
-	assert.match(parameters.properties.backend!.description, /codex runs plan, implement and ask through the user's own codex install, experimentally\./);
+	assert.match(parameters.properties.backend!.description, /codex runs plan, implement and ask through the user's own codex install\./);
+	assert.doesNotMatch(parameters.properties.backend!.description, /experimental/i);
 	assert.doesNotMatch(parameters.properties.backend!.description, /cannot be continued/);
 	assert.match(parameters.properties.model!.description, /on the codex backend a model id with no whitespace, for plan, implement and ask,/);
 	assert.match(parameters.properties.effort!.description, /on the codex backend one level with no whitespace, for plan, implement and ask,/);
@@ -749,7 +753,10 @@ test("profile save, list, use and default each do one thing, and only use change
 	await host.command("profile");
 	assert.match(host.last() ?? "", /^builtin \(current; default for new sessions\)\nwork\nUsage: \/fusion profile/);
 	await host.command("config");
-	assert.deepEqual(host.last()?.split("\n"), ["fusion configuration: builtin · new sessions start with builtin", ...settingsTable(LEGACY), "profiles file: (in memory)"]);
+	const shown = host.last()?.split("\n") ?? [];
+	assert.deepEqual(shown.slice(0, -3), ["fusion configuration: builtin · new sessions start with builtin", ...settingsTable(LEGACY), "profiles file: (in memory)"]);
+	// The run history is this instance's own and says where the saved preference lives, apart from the profiles.
+	assert.match(shown.slice(-3).join("\n"), /^run history: (on|off) in this instance \([^)]*\)\nsaved history preference for new instances: unset \([^)]*\)\nsettings file: \(in memory\)$/);
 	// Completion offers what the last read found.
 	assert.deepEqual(host.completions("profile use w"), [{ value: "profile use work", label: "profile use work" }]);
 	assert.deepEqual(host.completions("profile save "), [{ value: "profile save work", label: "profile save work" }], "save never offers builtin");
@@ -1302,7 +1309,7 @@ test("fusion starts off: only the activation tool is offered, a direct call star
 	assert.equal(claude.starts.length, 0);
 	assert.deepEqual(host.branch, []);
 	await host.command("status");
-	assert.match(host.last() ?? "", /^fusion: off\nprofile: builtin\n\n[\s\S]*?\n\nno runs in this Pi session yet/);
+	assert.match(host.last() ?? "", /^fusion: off\nprofile: builtin\nhistory: [^\n]*\n\n[\s\S]*?\n\nno runs in this Pi session yet/);
 	// Neither config nor a profile command, nor a second session_start, turns it on.
 	await host.command("profile list");
 	await host.start();

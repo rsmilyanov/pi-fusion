@@ -367,6 +367,9 @@ test("every Fusion registration in the suite names the backends it takes, and th
 			const production = call.includes(DEFAULTS);
 			assert.ok(tripwire || production, `${where} registers the extension without naming ${TRIPWIRE} or ${DEFAULTS}: ${call}`);
 			assert.ok(!(tripwire && production), `${where} registers the extension naming both ${TRIPWIRE} and ${DEFAULTS}, which cannot both be what it takes: ${call}`);
+			// Left out, the settings store is the user's own pi-fusion/settings.json, so a registration that names none
+			// would read the user's saved history preference; productionDefaults() names one of its own, checked below.
+			assert.ok(production || /\bsettings:/.test(call), `${where} registers the extension without a settings store of its own, so it would read the user's settings file: ${call}`);
 			if (production) defaults.push(where);
 		}
 	}
@@ -408,6 +411,12 @@ test("the production-default registration keeps the codex tripwire, because no m
 		backends.initializer.properties.map((property) => property.getText()),
 		["...codexTripwire()"],
 		"productionDefaults registers the codex tripwire and nothing else: no pi tripwire, which would hide the binding these cases read, and nothing over codex",
+	);
+
+	const settings = returned.properties.find((property) => ts.isPropertyAssignment(property) && property.name.getText() === "settings");
+	assert.ok(
+		settings && ts.isPropertyAssignment(settings) && settings.initializer.getText() === "memorySettingsStore()",
+		"productionDefaults reads and writes settings in memory, never the user's own settings file",
 	);
 
 	// And what it returns, with every variable it refuses cleared for the call: this build's own claude and pi, which

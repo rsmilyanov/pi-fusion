@@ -2,8 +2,8 @@ import { isCodexToken, type ResolvedSelection } from "./types.ts";
 
 /**
  * What a role runs as on the Codex backend: the model, provider and effort a call resolves to, the contract it runs
- * under and the no-questions addendum a run that cannot ask runs under after it, and the sandbox and approval policy a Codex thread is started with. This is a
- * binding, not an execution adapter: nothing here starts a child, reads a Codex configuration or knows the app-server
+ * under, and the sandbox and approval policy a Codex thread is started with. This is a binding, not an execution
+ * adapter: nothing here starts a child, reads a Codex configuration or knows the app-server
  * protocol. Which models and efforts exist is the child's to say; this module only settles what the call asks for and
  * refuses what no Codex value can be.
  */
@@ -41,11 +41,6 @@ export interface CodexRole {
 	provider?: string;
 	effort?: string;
 	contract: string;
-	/**
-	 * Appended after the role's contract only when the run has no question callback: it says what a child that cannot
-	 * ask does instead. A run that can ask runs its contract alone; which of the two a run is, is the run's to say.
-	 */
-	addendum: string;
 	mode?: CodexMode;
 	sandboxMode: CodexSandboxMode;
 	/** Nobody answers an approval request while a child runs unattended, so none is ever made. */
@@ -54,22 +49,12 @@ export interface CodexRole {
 
 const CODEX_SANDBOX: Record<CodexRoleName, CodexSandboxMode> = { plan: "workspace-write", implement: "workspace-write", ask: "read-only" };
 
-/** The contracts a Codex role runs under: the shared prose every backend's roles run under, and the addendum after it. */
+/** The shared contracts a Codex role runs under, with no backend-specific question fallback. */
 const CODEX_CONTRACTS: Record<CodexRoleName, string> = { plan: "plan.md", implement: "implement.md", ask: "ask-answer.md" };
 const CODEX_ASK_CONTRACTS: Record<CodexMode, string> = { answer: "ask-answer.md", review: "ask-review.md" };
-const CODEX_ADDENDUM = "codex-no-questions.md";
-/**
- * Appended after a continued run's contract when it can ask: a resumed or forked thread keeps only the tools it was
- * started with, which for a thread started before questions is none, and no stable request can register one then.
- */
-export const CODEX_CONTINUED_QUESTIONS = "codex-continued-questions.md";
 
-/**
- * Every contract file a Codex role can run under, the addendum included: the extension checks each is there at load, so
- * a contract only Codex names is as much a broken install as one a Claude role names. Names and no paths: where the
- * contracts live is the host's.
- */
-export const CODEX_CONTRACT_FILES: readonly string[] = [...new Set([...Object.values(CODEX_CONTRACTS), ...Object.values(CODEX_ASK_CONTRACTS), CODEX_ADDENDUM, CODEX_CONTINUED_QUESTIONS])];
+/** Every contract a Codex role names is checked at load, whichever backend a call will use. */
+export const CODEX_CONTRACT_FILES: readonly string[] = [...new Set([...Object.values(CODEX_CONTRACTS), ...Object.values(CODEX_ASK_CONTRACTS)])];
 
 /** The call parameters each Codex role takes: `fresh` is a plan call's alone, as it is on every backend. */
 const CODEX_ROLE_PARAMETERS: Record<"fresh" | "mode" | "model" | "effort", readonly CodexRoleName[]> = {
@@ -173,7 +158,6 @@ export function codexRole(call: CodexCall, recorded?: ResolvedSelection, env: No
 		...(provider === undefined ? {} : { provider }),
 		...(effort === undefined ? {} : { effort }),
 		contract: name === "ask" ? CODEX_ASK_CONTRACTS[mode] : CODEX_CONTRACTS[name],
-		addendum: CODEX_ADDENDUM,
 		...(name === "ask" ? { mode } : {}),
 		sandboxMode: CODEX_SANDBOX[name],
 		approvalPolicy: "never",

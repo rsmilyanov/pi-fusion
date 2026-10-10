@@ -18,8 +18,8 @@ export const EXIT = Object.freeze({ pass: 0, failure: 1, none: 2 });
 
 /**
  * Every case this harness knows: stage 1's G1 cases, then stage 2's G2 cases (Q10 to Q13 and Q19) and Q14, a stage 2
- * preparation measurement outside G2's gate, and stage 3's G3 cases (Q15, Q16), the only ones whose runs carry a
- * question callback and so the experimental connection shape. `model` marks a case that starts a turn, which is a provider request on the
+ * preparation measurement outside G2's gate, and stage 3's G3 cases (Q15, Q16), which script question answers and
+ * cancellation. Every current backend call has a callback; other cases fail on an unexpected question. `model` marks a case that starts a turn, which is a provider request on the
  * user's own login and quota with a cost Codex does not report; the others start a child and at most a thread. `fake`
  * marks a case the fake app-server can drive end to end; the rest need a native child that really runs a model. `needs`
  * names the option without which a case skips before anything starts, which it then does in either mode.
@@ -176,11 +176,11 @@ export function canonicalPath(file) {
  * ---------------------------------------------------------------------------------------------------------------- */
 
 /**
- * A role's developer instructions as `createCodexBackend` composes them: the contract, then the addendum. Kept here so
- * the model-free cases, which drive the transport without a turn, send the same body, and a test pins the two together.
+ * The shared role contract as `createCodexBackend` sends it, also used by model-free direct-transport cases. Tool
+ * registration belongs to the transport, not these fields: only a connection with a question callback adds it.
  */
 export function composeInstructions(role, read) {
-	return `${read(role.contract).trimEnd()}\n\n${read(role.addendum).trim()}\n`;
+	return `${read(role.contract).trimEnd()}\n`;
 }
 
 /** The thread/start body the backend sends for a role: only the named selection, the sandbox mode, approval never, instructions. */

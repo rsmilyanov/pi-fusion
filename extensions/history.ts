@@ -146,7 +146,10 @@ export function asEnded(held: HistoryRecord): HistoryRecord | undefined {
 	return { ...held, state: "aborted", endedAt: held.endedAt ?? held.startedAt, failure: HISTORY_ABORTED };
 }
 
-/** True when the user turned the on-disk run history on: it stays off unless PI_FUSION_HISTORY is exactly "1". */
+/**
+ * True when PI_FUSION_HISTORY turns the on-disk run history on, which it does only when it is exactly "1". It is the
+ * fallback a Fusion instance takes at startup when no history preference is saved in Fusion's settings file.
+ */
 export function historyEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 	return (env.PI_FUSION_HISTORY ?? "").trim() === "1";
 }

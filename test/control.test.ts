@@ -12,6 +12,7 @@ import { ArchiveIndex } from "../extensions/dashboard-archive.ts";
 import fusion, { builtinConfiguration, type FusionOptions, parseFusion, runRecords } from "../extensions/fusion.ts";
 import { settingsTable } from "../extensions/profiles.ts";
 import { memoryProfileStore } from "../extensions/profile-store.ts";
+import { memorySettingsStore, type SettingsStore, serializeSettings } from "../extensions/settings-store.ts";
 import { History, HISTORY_ABORTED, HISTORY_VERSION, type HistoryRecord } from "../extensions/history.ts";
 import { fakeBackend } from "./fake-pi-backend.ts";
 import { toolList, turnOn } from "./host-tools.ts";
@@ -53,10 +54,18 @@ type WaitFactory = (tui: { requestRender: () => void }, theme: any, keybindings:
 type Renderer = (message: any, options: { expanded: boolean; outputPad: number }, theme: any) => { render: (width: number) => string[] } | undefined;
 
 const USAGE =
-	"Usage: /fusion dashboard | /fusion dashboard stop | /fusion dashboard limit [N] | /fusion status [run-N] | /fusion cancel run-N | /fusion wait run-N | /fusion steer run-N <text> | /fusion answer [run-N] [text] | /fusion review run-N | /fusion on | /fusion off | /fusion config | /fusion profile [list | use <name> | save <name> | default <name>]";
+	"Usage: /fusion dashboard | /fusion dashboard stop | /fusion dashboard limit [N] | /fusion status [run-N] | /fusion cancel run-N | /fusion wait run-N | /fusion steer run-N <text> | /fusion answer [run-N] [text] | /fusion review run-N | /fusion on | /fusion off | /fusion config | /fusion profile [list | use <name> | save <name> | default <name>] | /fusion history [on | off]";
 const DASHBOARD_LIMIT_USAGE = "Usage: /fusion dashboard limit [N]; N must be a positive decimal safe integer";
 const PROFILE_USAGE = "Usage: /fusion profile [list | use <name> | save <name> | default <name>]; builtin names the built-in configuration for use and default";
-const STATUS_HEADER = ["fusion: on", "profile: builtin", "", ...settingsTable(builtinConfiguration().roles), "", ""].join("\n");
+/** What status says of a host's run history when nothing is saved and the variable is unset, and when the variable says 1. */
+const HISTORY_OFF = "off in this instance (no preference is saved and PI_FUSION_HISTORY is not 1)";
+const HISTORY_FROM_VARIABLE = "on in this instance (from PI_FUSION_HISTORY=1)";
+const STATUS_HEADER = ["fusion: on", "profile: builtin", `history: ${HISTORY_OFF}`, "", ...settingsTable(builtinConfiguration().roles), "", ""].join("\n");
+const STATUS_ON = ["fusion: on", "profile: builtin", `history: ${HISTORY_FROM_VARIABLE}`, "", ...settingsTable(builtinConfiguration().roles), "", ""].join("\n");
+
+// Every host here starts with the variable unset unless a case sets it, whatever the shell running the suite says.
+delete process.env.PI_FUSION_HISTORY;
+
 const ESC = "\u001b";
 const BEL = "\u0007";
 
@@ -82,7 +91,7 @@ afterEach(async () => {
 	}
 });
 
-function makeHost(cwd = repoRoot, mode: "tui" | "print" = "print", session: { id?: string; file?: string } = {}, backends: FusionOptions["backends"] = {}, extra: Pick<FusionOptions, "dashboard"> = {}) {
+function makeHost(cwd = repoRoot, mode: "tui" | "print" = "print", session: { id?: string; file?: string } = {}, backends: FusionOptions["backends"] = {}, extra: Pick<FusionOptions, "dashboard" | "settings"> = {}) {
 	const tools = new Map<string, Tool>();
 	const commands = new Map<string, Command>();
 	const handlers = new Map<string, (event: any, ctx: any) => Promise<unknown> | unknown>();
@@ -108,7 +117,7 @@ function makeHost(cwd = repoRoot, mode: "tui" | "print" = "print", session: { id
 		registerMessageRenderer: (customType: string, renderer: Renderer) => renderers.set(customType, renderer),
 	} as unknown as ExtensionAPI;
 	// These cases run only claude, through its fake protocol or an in-memory backend; accidental pi and codex routing stays fenced.
-	fusion(api, { ...extra, backends: { ...tripwires(), ...backends }, profiles: memoryProfileStore() });
+	fusion(api, { ...extra, backends: { ...tripwires(), ...backends }, profiles: memoryProfileStore(), settings: extra.settings ?? memorySettingsStore() });
 	const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text, dim: (text: string) => text };
 	const ui = {
 		setStatus(_key: string, _text: string | undefined) {},
@@ -157,7 +166,7 @@ function makeHost(cwd = repoRoot, mode: "tui" | "print" = "print", session: { id
 		openEditor = undefined;
 		resolve(typed);
 	};
-	return { activeTools, branch, sent, handlers, notices, waits, renders, finished, ctx, ui, editors, widgets, renderers, claude, control, text, tree, command, completions, closeEditor, failSends, begin };
+	return { activeTools, branch, sent, handlers, notices, waits, renders, finished, ctx, ui, editors, widgets, renderers, call, claude, control, text, tree, command, completions, closeEditor, failSends, begin };
 }
 
 /** A run's details without the three a test cannot pin down: how long it ran and what it had changed by then. */
@@ -674,6 +683,29 @@ test("parseFusion reads every /fusion form and answers anything else with the us
 	}
 });
 
+test("bare /fusion keeps the usage warning and shows status without changing mode", async () => {
+	const host = makeHost();
+	for (const mode of ["on", "off"]) {
+		await host.command(mode);
+		const active = [...host.activeTools];
+		for (const args of ["", " \t\n "]) {
+			host.notices.length = 0;
+			await host.command(args);
+			assert.equal(host.notices.length, 2);
+			assert.deepEqual(host.notices[0], [USAGE, "warning"]);
+			const status = host.notices[1]!;
+			assert.equal(status[1], "info");
+			assert.match(status[0], new RegExp(`^fusion: ${mode}\\nprofile: builtin\\n`));
+			assert.deepEqual(host.activeTools, active);
+			host.notices.length = 0;
+			await host.command("status");
+			assert.deepEqual(host.notices, [status]);
+		}
+	}
+	assert.deepEqual(host.branch, []);
+	assert.deepEqual(host.sent, []);
+});
+
 test("/fusion status lists this Pi session's runs and details the one it is given", async () => {
 	const host = makeHost();
 	await host.command("status");
@@ -683,7 +715,7 @@ test("/fusion status lists this Pi session's runs and details the one it is give
 	await host.command("status");
 	assert.equal(host.notices.length, 1);
 	assert.equal(host.notices[0]![1], "info");
-	assert.match(host.notices[0]![0], /^fusion: on\nprofile: builtin\n\n[\s\S]*?\n\nrun-1 · implement · opus · running · background · \d+s\nsession usage: /);
+	assert.match(host.notices[0]![0], /^fusion: on\nprofile: builtin\nhistory: [^\n]*\n\n[\s\S]*?\n\nrun-1 · implement · opus · running · background · \d+s\nsession usage: /);
 	await started(host, "run-1");
 	host.notices.length = 0;
 	await host.command("status run-1");
@@ -1142,6 +1174,9 @@ test("/fusion completes the first word, and then the runs each command can still
 		{ value: "profile use", label: "profile use" },
 		{ value: "profile save", label: "profile save" },
 		{ value: "profile default", label: "profile default" },
+		{ value: "history", label: "history" },
+		{ value: "history on", label: "history on" },
+		{ value: "history off", label: "history off" },
 	]);
 	assert.deepEqual(host.completions("o"), [
 		{ value: "on", label: "on" },
@@ -1380,7 +1415,7 @@ test("the session usage shows in /fusion status and claude_control details with 
 	await host.command("status");
 	const [line, type] = host.notices[0]!;
 	assert.equal(type, "info");
-	assert.match(line, /^fusion: on\nprofile: builtin\n\n[\s\S]*?\n\nrun-1 · implement · opus · done · \d+s · context <1%\nsession usage: est\. \$0\.2500 · in \d+ out \d+ tokens · workflow agents 250 tokens · 1 calls$/);
+	assert.match(line, /^fusion: on\nprofile: builtin\nhistory: [^\n]*\n\n[\s\S]*?\n\nrun-1 · implement · opus · done · \d+s · context <1%\nsession usage: est\. \$0\.2500 · in \d+ out \d+ tokens · workflow agents 250 tokens · 1 calls$/);
 	assert.ok(!line.includes("warn at") && !line.includes("· limit"), "with no threshold and no limit the line names neither");
 	const status = await host.control({ action: "status" });
 	assert.match(status.content[0]!.text, /^run-1 · implement · opus · done · \d+s( · context <1%)?$/, "the text the host reads is unchanged");
@@ -1829,7 +1864,7 @@ test("a later Pi process on the same host session shows the earlier runs, their 
 		await second.command("status");
 		assert.match(
 			second.notices[0]![0],
-			/^fusion: on\nprofile: builtin\n\n[\s\S]*?\n\nno runs in this Pi session yet\nrun-1 · ultracode · fable · done · earlier Pi process\nsession usage: est\. \$0\.2500 · in \d+ out \d+ tokens · workflow agents 250 tokens · 1 calls$/,
+			/^fusion: on\nprofile: builtin\nhistory: [^\n]*\n\n[\s\S]*?\n\nno runs in this Pi session yet\nrun-1 · ultracode · fable · done · earlier Pi process\nsession usage: est\. \$0\.2500 · in \d+ out \d+ tokens · workflow agents 250 tokens · 1 calls$/,
 		);
 		assert.deepEqual(second.completions("status "), [{ value: "status run-1", label: "status run-1" }], "the earlier run is offered for status, which acts on it");
 		second.notices.length = 0;
@@ -1877,7 +1912,7 @@ test("a later Pi process on the same host session shows the earlier runs, their 
 		second.notices.length = 0;
 		assert.match(await withScenario("ok", () => second.text(second.claude({ role: "ultracode", task: "another thing" }))), /\[run-2 · ultracode · fable · /);
 		await second.command("status");
-		assert.match(second.notices[0]![0], /^fusion: on\nprofile: builtin\n\n[\s\S]*?\n\nrun-2 · ultracode · fable · done · \d+s · context <1%\nrun-1 · ultracode · fable · done · earlier Pi process\nsession usage: est\. \$0\.5000 · .* · 2 calls$/);
+		assert.match(second.notices[0]![0], /^fusion: on\nprofile: builtin\nhistory: [^\n]*\n\n[\s\S]*?\n\nrun-2 · ultracode · fable · done · \d+s · context <1%\nrun-1 · ultracode · fable · done · earlier Pi process\nsession usage: est\. \$0\.5000 · .* · 2 calls$/);
 		assert.deepEqual(
 			second.completions("status "),
 			[
@@ -1902,7 +1937,7 @@ test("one host session never reads another one's runs", () =>
 		const other = durable("host-9");
 		other.branch.push(...first.branch);
 		await other.command("status");
-		assert.deepEqual(other.notices, [[`${STATUS_HEADER}no runs in this Pi session yet\nsession usage: est. $0.0000 · in 0 out 0 tokens · workflow agents 0 tokens · 0 calls`, "info"]]);
+		assert.deepEqual(other.notices, [[`${STATUS_ON}no runs in this Pi session yet\nsession usage: est. $0.0000 · in 0 out 0 tokens · workflow agents 0 tokens · 0 calls`, "info"]]);
 		assert.equal(fs.existsSync(path.join(dir, "host-9.json")), false, "a session with nothing to keep writes nothing");
 	}));
 
@@ -2067,7 +2102,7 @@ test("an interruption the host corrected on disk reads back interrupted from a f
 			const detail = await payload(`${url}api/runs/raw-waiting`);
 			assert.equal(detail.failure, HISTORY_ABORTED);
 			assert.ok(!("endedAt" in detail) && !("question" in detail));
-			assert.equal(await statusOf(host), "fusion: on\nno runs in this Pi session yet\nrun-1 · implement · opus · aborted · earlier Pi process\nrun-2 · implement · opus · aborted · earlier Pi process\nsession usage: est. $0.0000 · in 0 out 0 tokens · workflow agents 0 tokens · 0 calls", "no child is active");
+			assert.equal(await statusOf(host), `${STATUS_ON}no runs in this Pi session yet\nrun-1 · implement · opus · aborted · earlier Pi process\nrun-2 · implement · opus · aborted · earlier Pi process\nsession usage: est. $0.0000 · in 0 out 0 tokens · workflow agents 0 tokens · 0 calls`, "no child is active");
 		} finally {
 			await host.command("dashboard stop");
 		}
@@ -2181,7 +2216,7 @@ test("after a modeled restart every invocation of one handle stays visible while
 			]);
 			assert.match(details[1].failure, /boom two/);
 			assert.equal(new Set(listed.runs.map((run: any) => run.id)).size, 4, "each invocation has its own id");
-			assert.match(await statusOf(second), /^fusion: on\nno runs in this Pi session yet\n/, "nothing of the earlier process is running here");
+			assert.match(await statusOf(second), /^fusion: on\nprofile: builtin\nhistory: on in this instance \(from PI_FUSION_HISTORY=1\)\n\n[\s\S]*?\n\nno runs in this Pi session yet\n/, "nothing of the earlier process is running here");
 			assert.match((await second.control({ action: "status", run: "run-1" })).content[0]!.text, /^run-1 \(implement\) ran in an earlier Pi process: done, .*\nreport three\ncontinue it with claude and continue run-1/);
 			assert.deepEqual(second.completions("status "), [{ value: "status run-1", label: "status run-1" }, { value: "status run-2", label: "status run-2" }], "one handle, one control target");
 
@@ -2276,7 +2311,7 @@ test("a history file this process may not read is one warning, is never rewritte
 				const warnings = host.notices.filter(([text]) => text.startsWith("fusion history:"));
 				assert.equal(warnings.length, 1, "said once");
 				assert.match(warnings[0]![0], /host-1\.json could not be read/);
-				assert.match(await statusOf(host), /^fusion: on\nno runs in this Pi session yet\n/, "no run is made up from it");
+				assert.match(await statusOf(host), /^fusion: on\nprofile: builtin\nhistory: on in this instance \(from PI_FUSION_HISTORY=1\)\n\n[\s\S]*?\n\nno runs in this Pi session yet\n/, "no run is made up from it");
 				assert.equal(fs.statSync(target).mode & 0o777, 0, "its mode is left alone");
 			} finally {
 				await host.command("dashboard stop");
@@ -2371,7 +2406,7 @@ test("a run whose Pi process ended while it was going comes back as aborted, in 
 			assert.deepEqual(sent.details, { handle: "run-1", state: "aborted", historical: true });
 			second.notices.length = 0;
 			await second.command("status");
-			assert.match(second.notices[0]![0], /^fusion: on\nprofile: builtin\n\n[\s\S]*?\n\nno runs in this Pi session yet\nrun-1 · implement · opus · aborted · earlier Pi process\n/);
+			assert.match(second.notices[0]![0], /^fusion: on\nprofile: builtin\nhistory: [^\n]*\n\n[\s\S]*?\n\nno runs in this Pi session yet\nrun-1 · implement · opus · aborted · earlier Pi process\n/);
 			assert.match(await withScenario("ok", () => second.text(second.claude({ role: "implement", task: "another thing" }))), /\[run-2 · implement · /, "the interrupted run keeps its name");
 			assert.deepEqual(
 				heldFile(dir, "host-1").records.map((record) => [record.handle, record.state]),
@@ -2635,3 +2670,364 @@ test("a history file from a newer pi-fusion is left byte for byte as it was", ()
 		assert.equal(warnings.length, 1);
 		assert.match(warnings[0]![0], /^fusion history: history file .* was written by a newer pi-fusion \(version 99\); it is left alone$/);
 	}));
+
+/** Runs the body with a history directory of its own and PI_FUSION_HISTORY as given, before any host of it is made. */
+async function withVariable<T>(value: string | undefined, body: (dir: string) => Promise<T>): Promise<T> {
+	const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "pi-fusion-history-"));
+	const dir = path.join(root, "history");
+	if (value === undefined) delete process.env.PI_FUSION_HISTORY;
+	else process.env.PI_FUSION_HISTORY = value;
+	process.env.PI_FUSION_HISTORY_DIR = dir;
+	try {
+		return await body(dir);
+	} finally {
+		delete process.env.PI_FUSION_HISTORY;
+		delete process.env.PI_FUSION_HISTORY_DIR;
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+}
+
+/** A settings store that already holds a history preference, as a file saved by an earlier instance would. */
+const savedHistory = (enabled: boolean) => memorySettingsStore(serializeSettings({ version: 1, history: { enabled } }));
+
+/** A host of a durable Pi session that reads its settings from the store given, which a later host can share. */
+const durableWith = (id: string, settings: SettingsStore) => makeHost(repoRoot, "print", { id, file: path.join(os.tmpdir(), `${id}.jsonl`) }, {}, { settings });
+
+/** The history line /fusion status shows for the host. */
+const historyStatus = async (host: ReturnType<typeof makeHost>): Promise<string | undefined> => {
+	host.notices.length = 0;
+	await host.command("status");
+	const line = host.notices[0]?.[0].split("\n").find((text) => text.startsWith("history: "));
+	host.notices.length = 0;
+	return line;
+};
+
+/** How many runs the session's history file holds, or undefined when there is no file. */
+const heldCount = (dir: string, id: string): number | undefined => (fs.existsSync(path.join(dir, `${id}.json`)) ? heldFile(dir, id).records.length : undefined);
+
+const ok = (host: ReturnType<typeof makeHost>, task = "do a thing") => withScenario("ok", () => host.text(host.claude({ role: "implement", task })));
+
+test("/fusion history parses its own arguments and completes them", () => {
+	const usage = { kind: "usage", message: "Usage: /fusion history [on | off]; on and off save the run history preference for new Fusion instances and leave this one as it started" };
+	assert.deepEqual(parseFusion("history"), { kind: "history" });
+	assert.deepEqual(parseFusion("  history   on "), { kind: "history-set", enabled: true });
+	assert.deepEqual(parseFusion("history off"), { kind: "history-set", enabled: false });
+	for (const args of ["history yes", "history on now", "history 1", "history ON"]) assert.deepEqual(parseFusion(args), usage, args);
+	const host = makeHost();
+	assert.deepEqual(host.completions("hist"), [
+		{ value: "history", label: "history" },
+		{ value: "history on", label: "history on" },
+		{ value: "history off", label: "history off" },
+	]);
+	assert.deepEqual(host.completions("history o"), [
+		{ value: "history on", label: "history on" },
+		{ value: "history off", label: "history off" },
+	]);
+});
+
+test("a saved history preference decides over PI_FUSION_HISTORY either way, and the variable decides only when none is saved", async () => {
+	await withVariable(undefined, async (dir) => {
+		const host = durableWith("host-1", savedHistory(true));
+		await ok(host);
+		assert.equal(heldCount(dir, "host-1"), 1, "saved on keeps history with the variable unset");
+		assert.equal(await historyStatus(host), "history: on in this instance (from the saved preference)");
+	});
+	await withVariable("1", async (dir) => {
+		const host = durableWith("host-1", savedHistory(false));
+		await ok(host);
+		assert.equal(fs.existsSync(dir), false, "saved off keeps no history with the variable set to 1");
+		assert.equal(await historyStatus(host), "history: off in this instance (from the saved preference)");
+	});
+	await withVariable("1", async (dir) => {
+		const host = durableWith("host-1", memorySettingsStore());
+		await ok(host);
+		assert.equal(heldCount(dir, "host-1"), 1, "with nothing saved the variable still turns history on");
+		assert.equal(await historyStatus(host), `history: ${HISTORY_FROM_VARIABLE}`);
+	});
+	await withVariable(" 1 ", async (dir) => {
+		await ok(durableWith("host-1", memorySettingsStore()));
+		assert.equal(heldCount(dir, "host-1"), 1, "the variable is read trimmed, as it always was");
+	});
+	await withVariable("true", async (dir) => {
+		const host = durableWith("host-1", memorySettingsStore());
+		await ok(host);
+		assert.equal(fs.existsSync(dir), false, "anything but 1 leaves it off");
+		assert.equal(await historyStatus(host), `history: ${HISTORY_OFF}`);
+	});
+});
+
+test("PI_FUSION_HISTORY is read when the instance is made, and changing it afterwards changes nothing", async () => {
+	await withVariable("1", async (dir) => {
+		const host = durableWith("host-1", memorySettingsStore());
+		delete process.env.PI_FUSION_HISTORY;
+		await ok(host);
+		assert.equal(heldCount(dir, "host-1"), 1);
+	});
+	await withVariable(undefined, async (dir) => {
+		const host = durableWith("host-1", memorySettingsStore());
+		process.env.PI_FUSION_HISTORY = "1";
+		await ok(host);
+		assert.equal(fs.existsSync(dir), false);
+	});
+});
+
+test("saving history on leaves this instance off and writing nothing, and a new instance sharing the settings keeps history", () =>
+	withVariable(undefined, async (dir) => {
+		const settings = memorySettingsStore();
+		const host = durableWith("host-1", settings);
+		await host.command("history on");
+		assert.deepEqual(host.notices, [["fusion: saved run history on for new Fusion instances in (in memory); this instance keeps run history off; on takes effect after restarting Pi, /reload or replacing the session", "info"]]);
+		assert.deepEqual(JSON.parse(settings.text()!), { version: 1, history: { enabled: true } });
+		await ok(host);
+		assert.equal(fs.existsSync(dir), false, "this instance keeps the choice it started with");
+		host.notices.length = 0;
+		await host.command("history");
+		assert.deepEqual(host.notices, [
+			[
+				[
+					`run history: ${HISTORY_OFF}`,
+					"saved history preference for new instances: on",
+					"settings file: (in memory)",
+					"Change the saved preference with /fusion history on|off; it applies after restarting Pi, /reload or a new session.",
+				].join("\n"),
+				"info",
+			],
+		]);
+		assert.equal(await historyStatus(host), `history: ${HISTORY_OFF}`);
+
+		const reloaded = durableWith("host-1", settings);
+		await ok(reloaded);
+		assert.equal(heldCount(dir, "host-1"), 1, "the next instance reads the saved preference");
+		assert.equal(await historyStatus(reloaded), "history: on in this instance (from the saved preference)");
+		await reloaded.command("history on");
+		assert.deepEqual(reloaded.notices, [["fusion: run history preference was already saved on in (in memory); this instance already keeps run history on", "info"]]);
+	}));
+
+test("saving history off leaves this instance on and writing later runs, and only a new instance stops", () =>
+	withVariable("1", async (dir) => {
+		const settings = memorySettingsStore();
+		const host = durableWith("host-1", settings);
+		await ok(host);
+		assert.equal(heldCount(dir, "host-1"), 1);
+		await host.command("history off");
+		assert.deepEqual(host.notices, [["fusion: saved run history off for new Fusion instances in (in memory); this instance keeps run history on; off takes effect after restarting Pi, /reload or replacing the session", "info"]]);
+		await ok(host, "another thing");
+		assert.equal(heldCount(dir, "host-1"), 2, "a run after the save is still kept");
+		assert.equal(await historyStatus(host), `history: ${HISTORY_FROM_VARIABLE}`);
+
+		const reloaded = durableWith("host-1", settings);
+		await ok(reloaded, "a third thing");
+		assert.equal(heldCount(dir, "host-1"), 2, "the next instance keeps nothing, and erases nothing kept before");
+		assert.equal(await historyStatus(reloaded), "history: off in this instance (from the saved preference)");
+	}));
+
+test("a session Pi keeps no file for keeps no history with history saved on, and can still save the preference", () =>
+	withVariable(undefined, async (dir) => {
+		const settings = savedHistory(true);
+		const host = makeHost(repoRoot, "print", { id: "host-1" }, {}, { settings });
+		await ok(host);
+		await host.command("status");
+		assert.equal(fs.existsSync(dir), false, "--no-session writes no history whatever the preference");
+		await host.command("history off");
+		assert.deepEqual(JSON.parse(settings.text()!), { version: 1, history: { enabled: false } });
+	}));
+
+test("the history preference saves while a run is unfinished and while Fusion is off, and changes neither", () =>
+	withVariable(undefined, async () => {
+		const settings = memorySettingsStore();
+		const host = makeHost(repoRoot, "print", {}, {}, { settings });
+		await withScenario("hang", () => host.claude({ role: "implement", task: "long work", background: true }));
+		host.notices.length = 0;
+		await host.command("history on");
+		assert.match(host.notices[0]![0], /^fusion: saved run history on for new Fusion instances/);
+		assert.deepEqual(JSON.parse(settings.text()!), { version: 1, history: { enabled: true } });
+		assert.match(await host.text(host.control({ action: "status", run: "run-1" })), /· running · background ·/, "the run goes on");
+		assert.equal(await host.text(host.control({ action: "cancel", run: "run-1" })), "run-1 cancelled");
+		await host.command("off");
+		host.notices.length = 0;
+		await host.command("history off");
+		assert.match(host.notices[0]![0], /^fusion: saved run history off for new Fusion instances in \(in memory\); this instance already keeps run history off$/);
+		assert.deepEqual(JSON.parse(settings.text()!), { version: 1, history: { enabled: false } });
+		host.notices.length = 0;
+		await host.command("status");
+		assert.match(host.notices[0]![0], /^fusion: off\n/, "saving a preference leaves the mode alone");
+	}));
+
+test("the saved preference is read before any history is, on the control, command and call paths alike", () =>
+	withVariable(undefined, async (dir) => {
+		await ok(durableWith("host-1", savedHistory(true)));
+		assert.equal(heldCount(dir, "host-1"), 1);
+		/** A store whose reads wait until the case opens it, as a slow disk would. */
+		const gated = () => {
+			const inner = savedHistory(true);
+			let open!: () => void;
+			const gate = new Promise<void>((resolve) => (open = resolve));
+			const store: SettingsStore = { ...inner, read: async () => (await gate, inner.read()) };
+			return { store, open };
+		};
+		const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+		const viaControl = gated();
+		const controlled = durableWith("host-1", viaControl.store);
+		let answered = false;
+		const status = controlled.control({ action: "status", run: "run-1" }).then((result) => ((answered = true), result));
+		await tick();
+		assert.equal(answered, false, "a control waits for the startup choice before it reads the history");
+		viaControl.open();
+		assert.match((await status).content[0]!.text, /^run-1 \(implement\) ran in an earlier Pi process: done/);
+
+		const viaCommand = gated();
+		const commanded = durableWith("host-1", viaCommand.store);
+		const listed = commanded.command("status");
+		await tick();
+		assert.deepEqual(commanded.notices, []);
+		viaCommand.open();
+		await listed;
+		assert.match(commanded.notices[0]![0], /\nrun-1 · implement · opus · done · earlier Pi process\n/);
+
+		const viaCall = gated();
+		const called = durableWith("host-1", viaCall.store);
+		const ran = ok(called, "one more");
+		await tick();
+		assert.equal(heldCount(dir, "host-1"), 1, "a call writes nothing before the choice settles");
+		viaCall.open();
+		assert.match(await ran, /\[run-2 · implement · /, "the handle is raised over the run the history kept");
+		assert.equal(heldCount(dir, "host-1"), 2);
+	}));
+
+/** Keeps plan-cap cases independent of the shell and restores its value after each case. */
+async function withPlanVariable<T>(value: string | undefined, body: () => Promise<T>): Promise<T> {
+	const before = process.env.PI_FUSION_PLAN_CONTEXT_PCT;
+	if (value === undefined) delete process.env.PI_FUSION_PLAN_CONTEXT_PCT;
+	else process.env.PI_FUSION_PLAN_CONTEXT_PCT = value;
+	try {
+		return await body();
+	} finally {
+		if (before === undefined) delete process.env.PI_FUSION_PLAN_CONTEXT_PCT;
+		else process.env.PI_FUSION_PLAN_CONTEXT_PCT = before;
+	}
+}
+
+test("saved plan caps govern handoffs and continuation warnings, with non-blank variables taking precedence", async (t) => {
+	const cases = [
+		{ saved: undefined, variable: undefined, cap: 35 },
+		{ saved: 60, variable: undefined, cap: 60 },
+		{ saved: 50, variable: undefined, cap: 50 },
+		{ saved: 0, variable: undefined, cap: 0 },
+		{ saved: 20, variable: "60", cap: 60 },
+		{ saved: 60, variable: "20", cap: 20 },
+		{ saved: 20, variable: "0", cap: 0 },
+		{ saved: 60, variable: "  ", cap: 60 },
+		{ saved: 60, variable: "35%", cap: 35 },
+	];
+	for (const tool of ["fusion", "claude"]) for (const { saved, variable, cap } of cases) {
+		await t.test(`${tool}: saved ${saved}, variable ${JSON.stringify(variable)} -> ${cap}%`, () => withPlanVariable(variable, async () => {
+			const settings = memorySettingsStore(serializeSettings({ version: 1, ...(saved === undefined ? {} : { plan: { contextPct: saved } }) }));
+			const backend = fakeBackend({ name: "claude", scripts: [{ text: "Agreed plan", contextTokens: 50, contextWindow: 100 }] });
+			const host = makeHost(repoRoot, "print", {}, { claude: backend.backend }, { settings });
+			await host.call(tool, { role: "plan", task: "the goal" });
+			await host.control({ action: "wait", run: "run-1" });
+			const handedOff = cap > 0 && cap <= 50;
+			const handle = handedOff ? "run-2" : "run-1";
+			const next = await host.text(host.call(tool, { role: "plan", task: "follow up" }));
+			await host.control({ action: "wait", run: handle });
+			assert.equal(backend.starts[1]?.intent?.kind, handedOff ? "new" : "resume");
+			assert.equal(next.includes("is a fresh plan run"), handedOff);
+			if (handedOff) assert.match(backend.starts[1]!.prompt, /Agreed plan/);
+			const explicit = await host.text(host.call(tool, { continue: handle, task: "one more step" }));
+			await host.control({ action: "wait", run: handle });
+			assert.equal(backend.starts[2]?.intent?.kind, "resume", "an explicit continuation is never handed off");
+			assert.equal(explicit.includes(`past the ${cap}% cap`), handedOff, "zero disables warnings too");
+			const warnings = host.notices.filter(([text]) => text.includes("PI_FUSION_PLAN_CONTEXT_PCT="));
+			assert.equal(warnings.length, variable === "35%" ? 1 : 0, "an invalid variable keeps the default, not the saved cap");
+		}));
+	}
+});
+
+test("the plan cap captures the variable at creation and the file at startup, and history saves preserve it", () =>
+	withPlanVariable(undefined, async () => {
+		const settings = memorySettingsStore(serializeSettings({ version: 1, plan: { contextPct: 20 } }));
+		const backend = fakeBackend({ name: "claude", scripts: [{ contextTokens: 50, contextWindow: 100 }] });
+		const host = makeHost(repoRoot, "print", {}, { claude: backend.backend }, { settings });
+		process.env.PI_FUSION_PLAN_CONTEXT_PCT = "0";
+		await host.begin();
+		await settings.update((current) => ({ ...current, plan: { contextPct: 60 } }));
+		await host.command("history off");
+		assert.deepEqual(await settings.read(), { version: 1, history: { enabled: false }, plan: { contextPct: 60 } });
+		await host.claude({ role: "plan", task: "the goal" });
+		await host.control({ action: "wait", run: "run-1" });
+		await host.claude({ role: "plan", task: "follow up" });
+		await host.control({ action: "wait", run: "run-2" });
+		assert.equal(backend.starts[1]?.intent?.kind, "new", "the existing instance keeps its 20% cap");
+
+		delete process.env.PI_FUSION_PLAN_CONTEXT_PCT;
+		const reloaded = makeHost(repoRoot, "print", {}, { claude: backend.backend }, { settings });
+		await reloaded.claude({ role: "plan", task: "the goal" });
+		await reloaded.control({ action: "wait", run: "run-1" });
+		await reloaded.claude({ role: "plan", task: "follow up" });
+		await reloaded.control({ action: "wait", run: "run-1" });
+		assert.equal(backend.starts[3]?.intent?.kind, "resume", "a new instance reads the saved 60% cap");
+	}));
+
+test("delegation waits for the same startup settings read as controls before weighing the plan cap", () =>
+	withPlanVariable(undefined, async () => {
+		const inner = memorySettingsStore(serializeSettings({ version: 1, plan: { contextPct: 60 } }));
+		let open!: () => void;
+		let reading!: () => void;
+		const gate = new Promise<void>((resolve) => (open = resolve));
+		const readStarted = new Promise<void>((resolve) => (reading = resolve));
+		let reads = 0;
+		const settings: SettingsStore = { ...inner, read: async () => {
+			reads += 1;
+			reading();
+			await gate;
+			return inner.read();
+		} };
+		const backend = fakeBackend({ name: "claude", scripts: [{ contextTokens: 50, contextWindow: 100 }] });
+		const host = makeHost(repoRoot, "print", {}, { claude: backend.backend }, { settings });
+		const status = host.control({ action: "status" });
+		const run = host.call("fusion", { role: "plan", task: "the goal" });
+		await readStarted;
+		assert.equal(backend.starts.length, 0, "no backend runs before the cap is resolved");
+		open();
+		await Promise.all([status, run]);
+		await host.control({ action: "wait", run: "run-1" });
+		await host.call("fusion", { role: "plan", task: "follow up" });
+		await host.control({ action: "wait", run: "run-1" });
+		assert.equal(backend.starts[1]?.intent?.kind, "resume", "routing uses the saved 60%, not the default 35%");
+		assert.equal(reads, 1, "controls and delegation share one startup read");
+	}));
+
+test("a settings file this cannot read is left alone: startup warns once with the behavior it chose, and a save refuses to replace it", async () => {
+	await withVariable("1", async (dir) => {
+		const settings = memorySettingsStore("{ not json");
+		const host = durableWith("host-1", settings);
+		await host.begin();
+		const warnings = () => host.notices.filter(([, type]) => type === "warning").map(([text]) => text);
+		assert.equal(warnings().length, 1);
+		assert.match(warnings()[0]!, /^fusion: settings file \(in memory\) is not valid JSON \(.*\); fix it by hand; run history is on in this instance \(from PI_FUSION_HISTORY=1\); plan context cap is \d+(?:\.\d+)?%$/);
+		await ok(host);
+		assert.equal(heldCount(dir, "host-1"), 1, "the variable decides when the file cannot be read");
+		host.notices.length = 0;
+		await host.command("history off");
+		assert.deepEqual(host.notices.map(([, type]) => type), ["error"]);
+		assert.match(host.notices[0]![0], /^the run history preference was not saved: settings file \(in memory\) is not valid JSON/);
+		assert.equal(settings.text(), "{ not json", "a file this cannot read is never replaced");
+		host.notices.length = 0;
+		await host.command("history");
+		assert.match(host.notices[0]![0], /^run history: on in this instance \(from PI_FUSION_HISTORY=1\)\nsaved history preference for new instances: unknown \(settings file \(in memory\) is not valid JSON/);
+		assert.equal(warnings().length, 0, "the startup warning is said once");
+	});
+	await withVariable(undefined, async (dir) => {
+		const text = JSON.stringify({ version: 2, history: { enabled: true } });
+		const settings = memorySettingsStore(text);
+		const host = durableWith("host-1", settings);
+		await ok(host);
+		assert.equal(fs.existsSync(dir), false);
+		const warnings = host.notices.filter(([, type]) => type === "warning").map(([text]) => text);
+		assert.equal(warnings.length, 1);
+		assert.match(warnings[0]!, /written by a newer pi-fusion.*; run history is off in this instance \(PI_FUSION_HISTORY is not 1\); plan context cap is \d+(?:\.\d+)?%$/);
+		await host.command("history on");
+		assert.equal(settings.text(), text, "a newer file is never replaced");
+	});
+});

@@ -1,6 +1,6 @@
 # Questions a child asks
 
-A child uses `ask_orchestrator(question)` for a small decision missing from its brief. The call stays open, retaining context, until an answer arrives. On Codex, tool availability depends on how the thread was started ([below](#on-codex)). Wider scope or an unresolved design decision belongs in an implementer's **Escalation** report, which ends the run.
+A child uses `ask_orchestrator(question)` for a small decision missing from its brief. The call stays open, retaining context, until an answer arrives. Codex requires a question callback and trusts continuations to restore the tool registered at thread creation ([below](#on-codex)). Wider scope or an unresolved design decision belongs in an implementer's **Escalation** report, which ends the run.
 
 ```text
 child asks -> run waiting -> host or user supplies one answer
@@ -56,37 +56,27 @@ Manual Linux cases have measured an answered native question with a steer admitt
 
 ## On Codex
 
-**Experimental.** Shapes come from Codex 0.160.0 source. Native questions were measured for `ask` only ([G3](codex-backend.md#g3-cases)); `plan`/`implement` questions, the continued-questions fallback and host answer races remain fake-tested.
+Shapes come from Codex 0.160.0 source. Questions on a native app-server were measured for `ask` only ([G3](codex-backend.md#g3-cases)); `plan`/`implement` questions, callback admission, shared-contract-only continuations and host answer races remain fake-tested.
 
-Sources: [`codex.ts`](../extensions/backends/codex.ts), [`codex-transport.ts`](../extensions/backends/codex-transport.ts), and the two `contracts/codex-*questions.md` addenda.
+Sources: [`codex.ts`](../extensions/backends/codex.ts) and [`codex-transport.ts`](../extensions/backends/codex-transport.ts).
 
 ```text
-delegated run -> question callback (no separate setting)
+backend run -> required question callback (no separate setting)
+  +-- absent / not callable -> refuse before contract read, lookup or spawn
   -> initialize: capabilities.experimentalApi = true
      WHOLE connection opts in, not just the question tool
   -> fresh thread: register ask_orchestrator
-  -> resume/fork: register nothing; Codex restores original tools
-
-thread started without tool -> still has no tool; never upgraded
+  -> resume/fork: register nothing; trust Codex to restore that registration
 ```
 
-Running a role on Codex opts into that experimental connection shape. The fresh thread's only dynamic tool has the shared question description and one required string `question`. Stable resume/fork requests cannot add it to an older thread; G3 observed restoration on one resume and one fork.
+Normal delegations always supply the callback. Internal callback-less calls are unsupported; an already cancelled call still finishes as cancellation without starting anything. Every admitted run receives only its shared role contract, with no Codex-specific question fallback instructions.
 
 | Run | Developer instructions | Tool availability |
 | --- | --- | --- |
-| Fresh, with callback | Role contract | Register `ask_orchestrator` |
-| Continued, with callback | Role contract + `codex-continued-questions.md` | Only if originally registered |
-| No callback (internal only) | Role contract + `codex-no-questions.md` | No registration or experimental opt-in; restored calls get a fixed refusal |
+| Fresh | Shared role contract | Register `ask_orchestrator` |
+| Resume/fork | Shared role contract | Inherit the original registration |
 
-Both fallbacks say to stop rather than ask in output or proceed as if answered when no tool is available. Report the question, options and recommendation in:
-
-| Role/mode | Report section |
-| --- | --- |
-| `implement` | **Escalation** |
-| `plan`, `ask` answer | **Open questions** |
-| `ask` review | **Notes** |
-
-Continuation authority is unchanged; adding a callback upgrades no record or thread. If a tool-less thread needs a question, start a new run without `continue`, carrying its report (`plan` needs `fresh: true`).
+The fresh thread's only dynamic tool has the shared question description and one required string `question`. Stable resume/fork requests cannot add it; G3 observed restoration on one resume and one fork. Fusion relies on its own fresh-thread registration and Codex's restoration rather than probing the tool inventory or persisting a capability marker. Tool-less legacy threads are unsupported, not detected or upgraded: start a new run without `continue`, carrying the report (`plan` needs `fresh: true`). Continuation identity, checkpoint and usage checks are unchanged.
 
 ```text
 item/tool/call: ask_orchestrator, no namespace, non-empty question
